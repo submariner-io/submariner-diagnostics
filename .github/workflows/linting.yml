@@ -1,0 +1,51 @@
+---
+name: Linting
+
+on:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  gitlint:
+    name: Commit Message(s)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+      - name: Run gitlint
+        run: make gitlint
+
+  markdown-link-check:
+    name: Markdown Links (modified files)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Run markdown-link-check
+        uses: gaurav-nelson/github-action-markdown-link-check@3c3b66f1f7d0900e37b71eca45b63ea9eedfce31
+        with:
+          config-file: ".markdownlinkcheck.json"
+          check-modified-files-only: "yes"
+          base-branch: ${{ github.base_ref }}
+
+  markdownlint:
+    name: Markdown
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Run markdownlint
+        run: make markdownlint
+
+  shellcheck:
+    name: Shell
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Run shellcheck
+        run: make shellcheck
