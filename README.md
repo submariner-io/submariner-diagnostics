@@ -14,8 +14,8 @@ Comprehensive toolkit for collecting and analyzing Submariner diagnostics. Colle
 
 **1. Clone the repository:**
 ```bash
-git clone https://github.com/yboaron/submariner-diagnostic-toolkit.git
-cd submariner-diagnostic-toolkit
+git clone https://github.com/submariner-io/submariner-diagnostics.git
+cd submariner-diagnostics
 ```
 
 **2. Verify prerequisites:**
@@ -189,159 +189,6 @@ cp analyze-offline.md ~/.claude/commands/submariner/analyze-offline.md
 - **Benefit**: Verifies VXLAN traffic allowed on vx-submariner interface
 - **Expected failures**: RouteAgent issues + verify test failures from non-gateway pods
 
-## Collection Script Features
-
-### Intelligent Decision Making
-- ✅ **Skip verify when tunnels broken** - Saves 15-20 minutes
-- ✅ **Auto tcpdump when needed** - Captures packet-level diagnostics
-- ✅ **Parallel collection** - Faster data gathering from both clusters
-- ✅ **Comprehensive timing** - Track collection duration per phase
-
-### Validation
-- ✅ Verifies kubeconfigs exist and clusters are accessible
-- ✅ Validates context names are different
-- ✅ Checks for required tools (subctl, kubectl, tcpdump)
-- ✅ Validates parameters before starting collection
-- ✅ **Version compatibility check** - Verifies subctl and Submariner versions match
-  - Checks both clusters separately
-  - Warns if versions mismatch
-  - Warns if clusters have different Submariner versions
-  - Prompts user to continue or cancel if mismatch detected
-  - Documents all version info in manifest
-
-### Smart Exit Behavior
-- Exits on validation failures (missing prereqs)
-- Continues through all collection steps even if some commands fail
-- **Never closes your terminal** on error
-
-## Analysis Comparison
-
-| Feature | Basic Analysis | Advanced Analysis (AI) |
-|---------|---------------|----------------------|
-| **Setup** | None (just Python) | Claude Code + subscription |
-| **Speed** | Fast (~5 seconds) | Medium (~1-2 minutes) |
-| **Cost** | Free | Claude subscription required |
-| **Detection** | Pattern matching | Deep contextual analysis |
-| **Accuracy** | Good for common issues | Excellent for all issues |
-| **Use Case** | Quick initial check | Deep investigation |
-
-## Example Workflow
-
-### Scenario: Tunnel Not Connected
-
-**Step 1: Collect**
-```bash
-./collect-full-diagnostics.sh \
-  cluster1-context /path/to/kubeconfig1 \
-  cluster2-context /path/to/kubeconfig2 \
-  "tunnel not connected"
-```
-*Result: tcpdump captures collected automatically (tunnel status ≠ connected)*
-
-**Step 2: Basic Analysis**
-```bash
-./analyze-basic.py submariner-diagnostics-*.tar.gz
-```
-*Output:*
-```
-Issues Detected (2):
-  • Cluster2 tunnel status: error
-  • cluster2: Likely ESP protocol blocking
-
-Recommendations:
-  1. cluster2: Enable UDP encapsulation (set ceIPSecForceUDPEncaps: true)
-```
-
-**Step 3: (Optional) Advanced Analysis**
-```
-/submariner:analyze-offline submariner-diagnostics-*.tar.gz
-```
-*Provides:*
-- Detailed tcpdump pattern analysis
-- Confirms ESP blocking with packet-level evidence
-- Alternative solutions if UDP encapsulation doesn't work
-- Infrastructure-level investigation steps
-
-## Common Issues Detected
-
-### 1. ESP Protocol Blocking
-**Symptoms:** Tunnel status = error, using private IP
-**Basic Analysis:** ✅ Detects
-**Recommendation:** Enable UDP encapsulation
-
-### 2. UDP Port Blocking
-**Symptoms:** Tunnel status = error, using public IP
-**Basic Analysis:** ✅ Detects
-**Recommendation:** Allow UDP ports 500/4500
-
-### 3. MTU Issues
-**Symptoms:** Large packets fail, small packets succeed
-**Basic Analysis:** ✅ Detects
-**Recommendation:** Apply TCP MSS clamping
-
-### 4. Pod Health Issues
-**Symptoms:** Pods in CrashLoopBackOff, ImagePullBackOff
-**Basic Analysis:** ✅ Detects
-**Recommendation:** Fix pod-specific issues
-
-### 5. Infrastructure Packet Dropping
-**Symptoms:** tcpdump shows egress but no ingress
-**Basic Analysis:** ✅ Detects
-**Recommendation:** Check firewall/network between nodes
-
-### 6. Inter-Cluster Firewall Blocking
-**Symptoms:** Tunnel not connected, firewall inter-cluster test fails
-**Basic Analysis:** ✅ Detects (auto-detects NAT-T port from config)
-**Recommendation:** Allow UDP NAT-T port (default 4500, configurable) between gateway nodes
-**Cross-checked with:** tcpdump (UDP traffic patterns) + IPsec counters
-
-### 7. Intra-Cluster Firewall Blocking
-**Symptoms:** RouteAgent failures, verify tests fail from non-gateway pods
-**Basic Analysis:** ✅ Detects
-**Recommendation:** Allow VXLAN traffic on vx-submariner interface
-
-### 8. Intra-Cluster Routing Issues
-**Symptoms:** Gateway tunnel connected, but RouteAgent errors on non-gateway nodes
-**Basic Analysis:** ✅ Detects via gateway/RouteAgent correlation
-**Diagnosis:** Non-gateway nodes cannot reach local gateway node's IP
-**Recommendation:** Investigate local cluster routing, especially in non-flat networking scenarios
-**Pattern Detection:** Control plane nodes failing indicates subnet routing issues
-
-## Output Structure
-
-```
-submariner-diagnostics-TIMESTAMP.tar.gz
-└── submariner-diagnostics-TIMESTAMP/
-    ├── manifest.txt                  # Collection metadata
-    ├── cluster1/                     # Cluster 1 diagnostics
-    │   ├── gather/                   # subctl gather output
-    │   │   └── cluster1/
-    │   │       ├── submariners_*.yaml       # Gateway CR
-    │   │       ├── *_ipsec-status.log       # IPsec state
-    │   │       ├── *_ipsec-trafficstatus.log# Traffic counters
-    │   │       ├── *_ip-xfrm-policy.log     # XFRM policies
-    │   │       ├── *_ip-routes.log          # Routing tables
-    │   │       ├── submariner-gateway-*.log # Gateway logs
-    │   │       └── pods_*.yaml              # Pod status
-    │   ├── subctl-show-all.txt
-    │   ├── subctl-show-versions.txt  # Version information
-    │   ├── subctl-diagnose-all.txt
-    │   └── routeagents.yaml
-    ├── cluster2/                     # Cluster 2 (same structure)
-    ├── tcpdump/                      # Packet captures (if tunnels down)
-    │   ├── cluster1-gateway-node-analysis.txt  # Text summary
-    │   ├── cluster1-gateway-node.pcap          # Binary capture
-    │   └── cluster2-gateway-...
-    ├── firewall/                     # Firewall diagnostics (conditional)
-    │   ├── firewall-inter-cluster.txt          # Inter-cluster firewall test
-    │   ├── firewall-intra-cluster-cluster1.txt # Intra-cluster (cluster1)
-    │   └── firewall-intra-cluster-cluster2.txt # Intra-cluster (cluster2)
-    └── verify/                       # Connectivity tests (if tunnels up)
-        ├── connectivity.txt
-        ├── connectivity-small-packet.txt
-        └── service-discovery.txt
-```
-
 ## Requirements
 
 ### Collection Script
@@ -360,56 +207,14 @@ submariner-diagnostics-TIMESTAMP.tar.gz
 - [Claude Code](https://claude.com/claude-code)
 - Claude subscription
 
-## Troubleshooting
-
-### Collection Issues
-
-**Error: Cannot connect to cluster**
-```bash
-# Verify kubeconfig is correct and cluster is accessible
-kubectl cluster-info --kubeconfig /path/to/kubeconfig
-```
-
-**Error: Context not found**
-```bash
-# List available contexts
-kubectl config get-contexts --kubeconfig /path/to/kubeconfig
-```
-
-**tcpdump collection takes long time**
-- Normal - waits 80 seconds for packet capture
-- Both clusters collected in parallel
-- Total tcpdump time: ~85-90 seconds
-
-**Version mismatch warning**
-- Collection script checks if subctl and Submariner versions match
-- If mismatch detected:
-  - Script shows warning with versions
-  - Prompts to continue or cancel
-  - Documents mismatch in manifest.txt
-- **Recommended:** Update subctl to match Submariner version
-
-### Analysis Issues
-
-**Basic analysis: "Module not found: yaml"**
-```bash
-pip install pyyaml
-```
-
-**Advanced analysis: Command not found**
-- Verify `analyze-offline.md` is copied to `~/.claude/commands/submariner/analyze-offline.md`
-- Restart Claude Code
-- Verify installation: `ls ~/.claude/commands/submariner/`
-- Make sure there's NO file at `~/.claude/commands/analyze-offline.md` (would create duplicate command)
-
 ## Contributing
 
 Contributions welcome! Please submit issues or PRs to:
-https://github.com/yboaron/submariner-diagnostic-toolkit
+https://github.com/submariner-io/submariner-diagnostics
 
 ## Support
 
-- **Collection/Analysis Issues**: [GitHub Issues](https://github.com/yboaron/submariner-diagnostic-toolkit/issues)
+- **Collection/Analysis Issues**: [GitHub Issues](https://github.com/submariner-io/submariner-diagnostics/issues)
 - **Submariner Bugs**: [Submariner GitHub](https://github.com/submariner-io/submariner/issues)
 - **Community Help**: [Submariner Slack](https://kubernetes.slack.com/archives/C010RJV694M)
 

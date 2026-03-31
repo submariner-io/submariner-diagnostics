@@ -663,6 +663,7 @@ Read:
 - `verify/connectivity-small-packet.txt` - Small packet size (400 bytes)
 
 **MTU Issue Pattern (DEFINITIVE):**
+
 - Default packet test FAILS (may have stopped early after 6 failures)
 - Small packet test SUCCEEDS
 
@@ -671,20 +672,30 @@ Read:
 **This is THE classic MTU pattern - do NOT ignore it!**
 
 **Why this indicates MTU:**
-- Large packets (~3KB) cannot traverse the network path due to MTU restrictions
+
+- Large packets (~3KB) cannot traverse the network path due to MTU
+  restrictions
 - Small packets (400 bytes) fit within MTU limits and succeed
-- If tunnels are connected but large packets fail, the issue is NOT at tunnel level
-- The infrastructure allows the tunnel protocol (ESP/UDP) but fragments/drops large packets
+- If tunnels are connected but large packets fail, the issue is NOT at
+  tunnel level
+- The infrastructure allows the tunnel protocol (ESP/UDP) but
+  fragments/drops large packets
 
 **Recommendation:**
+
 1. Apply TCP MSS clamping as immediate workaround
-2. Investigate underlying MTU configuration (interface MTU, path MTU discovery)
+2. Investigate underlying MTU configuration (interface MTU, path MTU
+   discovery)
 
 **Important Notes:**
-- Health check pings use small ICMP packets, so if health checks fail, MTU is NOT the root cause
+
+- Health check pings use small ICMP packets, so if health checks fail,
+  MTU is NOT the root cause
 - MTU issues only appear with large data transfers, not control plane
-- Tunnels may show "connected" status even with MTU issues (health checks still work)
-- Log errors like "CREATE_CHILD_SA failed with TS_UNACCEPTABLE" may appear but are symptoms, not root cause
+- Tunnels may show "connected" status even with MTU issues (health
+  checks still work)
+- Log errors like "CREATE_CHILD_SA failed with TS_UNACCEPTABLE" may
+  appear but are symptoms, not root cause
 
 #### **Analysis 3: RouteAgent Health**
 
