@@ -10,6 +10,15 @@ cleanup_temp_files() {
     if [ "$CONTEXT_RENAMED" = "true" ] && [ -n "$KUBECONFIG1_MODIFIED" ] && [ -f "$KUBECONFIG1_MODIFIED" ]; then
         rm -f "$KUBECONFIG1_MODIFIED"
     fi
+    if [ -n "$KUBECONFIG1_SANITIZED" ] && [ -f "$KUBECONFIG1_SANITIZED" ]; then
+        rm -f "$KUBECONFIG1_SANITIZED"
+    fi
+    if [ -n "$KUBECONFIG2_SANITIZED" ] && [ -f "$KUBECONFIG2_SANITIZED" ]; then
+        rm -f "$KUBECONFIG2_SANITIZED"
+    fi
+    if [ -n "$TEMP_CONTEXT_TEST_DIR" ] && [ -d "$TEMP_CONTEXT_TEST_DIR" ]; then
+        rm -rf "$TEMP_CONTEXT_TEST_DIR"
+    fi
 }
 
 # Register cleanup on exit (handles both success and failure)
@@ -43,6 +52,25 @@ show_usage() {
     echo "  $0 context1 /path/to/kubeconfig context2 /path/to/kubeconfig 'route agent degraded'"
     echo ""
     return 1 2>/dev/null || exit 1
+}
+
+# Function to test if we can create a directory with the given name
+# Returns 0 if successful, 1 if failed
+can_create_dir_with_name() {
+    local test_name="$1"
+    local test_dir="${TEMP_CONTEXT_TEST_DIR}/${test_name}"
+
+    mkdir -p "$test_dir" 2>/dev/null
+    local result=$?
+
+    return $result
+}
+
+# Function to sanitize context name by replacing illegal filesystem characters
+sanitize_context_name() {
+    local context="$1"
+    # Replace illegal characters (: / \ @) with dash
+    echo "$context" | sed 's/[:/\\@]/-/g'
 }
 
 # Function to collect diagnostics from a single cluster
@@ -533,6 +561,99 @@ if [ "$CLUSTER1_CONTEXT" = "$CLUSTER2_CONTEXT" ]; then
     fi
 fi
 
+# Create temporary directory for testing context names
+TEMP_CONTEXT_TEST_DIR=$(mktemp -d -t submariner-context-test.XXXXXX)
+
+# Test if context names can be used as directory names
+ORIGINAL_CLUSTER1_CONTEXT_SANITIZE="$CLUSTER1_CONTEXT"
+ORIGINAL_CLUSTER2_CONTEXT_SANITIZE="$CLUSTER2_CONTEXT"
+
+# Test cluster1 context
+echo "Validating cluster1 context name for filesystem compatibility..."
+if ! can_create_dir_with_name "$CLUSTER1_CONTEXT"; then
+    echo ""
+    echo "========================================"
+    echo "⚠ WARNING: ILLEGAL CHARACTERS DETECTED"
+    echo "========================================"
+    echo ""
+    echo "Cluster1 context name contains characters that cannot be used in directory names:"
+    echo "  Context: '$CLUSTER1_CONTEXT'"
+    echo ""
+    echo "The 'subctl gather' command will fail to create directories with this context name."
+    echo ""
+    echo "Auto-fixing: Creating a temporary sanitized kubeconfig copy..."
+    echo ""
+
+    # Create sanitized kubeconfig
+    KUBECONFIG1_SANITIZED="${KUBECONFIG1}.submariner-sanitized"
+    cp "$KUBECONFIG1" "$KUBECONFIG1_SANITIZED"
+
+    # Generate sanitized context name
+    SANITIZED_CLUSTER1_CONTEXT=$(sanitize_context_name "$CLUSTER1_CONTEXT")
+
+    # Rename context
+    KUBECONFIG="$KUBECONFIG1_SANITIZED" kubectl config rename-context "$CLUSTER1_CONTEXT" "$SANITIZED_CLUSTER1_CONTEXT" >/dev/null 2>&1
+
+    if [ $? -eq 0 ]; then
+        echo "  ✓ Created sanitized kubeconfig: $KUBECONFIG1_SANITIZED"
+        echo "  ✓ Sanitized context name: '$CLUSTER1_CONTEXT' → '$SANITIZED_CLUSTER1_CONTEXT'"
+        echo "  ✓ Original kubeconfig preserved: $KUBECONFIG1"
+        echo ""
+        echo "Proceeding with sanitized context name for cluster1..."
+        CLUSTER1_CONTEXT="$SANITIZED_CLUSTER1_CONTEXT"
+        KUBECONFIG1="$KUBECONFIG1_SANITIZED"
+        echo ""
+    else
+        echo "ERROR: Failed to create sanitized kubeconfig"
+        return 1 2>/dev/null || exit 1
+    fi
+else
+    echo "  ✓ Context name is filesystem-safe"
+fi
+
+# Test cluster2 context
+echo "Validating cluster2 context name for filesystem compatibility..."
+if ! can_create_dir_with_name "$CLUSTER2_CONTEXT"; then
+    echo ""
+    echo "========================================"
+    echo "⚠ WARNING: ILLEGAL CHARACTERS DETECTED"
+    echo "========================================"
+    echo ""
+    echo "Cluster2 context name contains characters that cannot be used in directory names:"
+    echo "  Context: '$CLUSTER2_CONTEXT'"
+    echo ""
+    echo "The 'subctl gather' command will fail to create directories with this context name."
+    echo ""
+    echo "Auto-fixing: Creating a temporary sanitized kubeconfig copy..."
+    echo ""
+
+    # Create sanitized kubeconfig
+    KUBECONFIG2_SANITIZED="${KUBECONFIG2}.submariner-sanitized"
+    cp "$KUBECONFIG2" "$KUBECONFIG2_SANITIZED"
+
+    # Generate sanitized context name
+    SANITIZED_CLUSTER2_CONTEXT=$(sanitize_context_name "$CLUSTER2_CONTEXT")
+
+    # Rename context
+    KUBECONFIG="$KUBECONFIG2_SANITIZED" kubectl config rename-context "$CLUSTER2_CONTEXT" "$SANITIZED_CLUSTER2_CONTEXT" >/dev/null 2>&1
+
+    if [ $? -eq 0 ]; then
+        echo "  ✓ Created sanitized kubeconfig: $KUBECONFIG2_SANITIZED"
+        echo "  ✓ Sanitized context name: '$CLUSTER2_CONTEXT' → '$SANITIZED_CLUSTER2_CONTEXT'"
+        echo "  ✓ Original kubeconfig preserved: $KUBECONFIG2"
+        echo ""
+        echo "Proceeding with sanitized context name for cluster2..."
+        CLUSTER2_CONTEXT="$SANITIZED_CLUSTER2_CONTEXT"
+        KUBECONFIG2="$KUBECONFIG2_SANITIZED"
+        echo ""
+    else
+        echo "ERROR: Failed to create sanitized kubeconfig"
+        return 1 2>/dev/null || exit 1
+    fi
+else
+    echo "  ✓ Context name is filesystem-safe"
+fi
+
 # Check for required tools
 echo "Checking for required tools..."
 if ! command -v subctl &>/dev/null; then
@@ -710,6 +831,25 @@ if [ "$CONTEXT_RENAMED" = "true" ]; then
     echo "" >> "${OUTPUT_DIR}/manifest.txt"
 fi
 
+# Document context sanitization if it occurred
+if [ "$ORIGINAL_CLUSTER1_CONTEXT_SANITIZE" != "$CLUSTER1_CONTEXT" ] || [ "$ORIGINAL_CLUSTER2_CONTEXT_SANITIZE" != "$CLUSTER2_CONTEXT" ]; then
+    echo "Context Name Sanitization:" >> "${OUTPUT_DIR}/manifest.txt"
+    echo "  ⚠ Context names contained illegal filesystem characters and were auto-fixed" >> "${OUTPUT_DIR}/manifest.txt"
+
+    if [ "$ORIGINAL_CLUSTER1_CONTEXT_SANITIZE" != "$CLUSTER1_CONTEXT" ]; then
+        echo "  Original cluster1 context: ${ORIGINAL_CLUSTER1_CONTEXT_SANITIZE}" >> "${OUTPUT_DIR}/manifest.txt"
+        echo "  Sanitized cluster1 context: ${CLUSTER1_CONTEXT}" >> "${OUTPUT_DIR}/manifest.txt"
+    fi
+
+    if [ "$ORIGINAL_CLUSTER2_CONTEXT_SANITIZE" != "$CLUSTER2_CONTEXT" ]; then
+        echo "  Original cluster2 context: ${ORIGINAL_CLUSTER2_CONTEXT_SANITIZE}" >> "${OUTPUT_DIR}/manifest.txt"
+        echo "  Sanitized cluster2 context: ${CLUSTER2_CONTEXT}" >> "${OUTPUT_DIR}/manifest.txt"
+    fi
+
+    echo "  Note: Characters like ':', '/', '\\', '@' cannot be used in directory names" >> "${OUTPUT_DIR}/manifest.txt"
+    echo "" >> "${OUTPUT_DIR}/manifest.txt"
+fi
+
 # Add version information to manifest
 echo "Version Information:" >> "${OUTPUT_DIR}/manifest.txt"
 echo "  subctl version: v${SUBCTL_VERSION_FULL}" >> "${OUTPUT_DIR}/manifest.txt"
@@ -752,6 +892,73 @@ echo "  Kubeconfig: ${KUBECONFIG2}" >> "${OUTPUT_DIR}/manifest.txt"
 echo "" >> "${OUTPUT_DIR}/manifest.txt"
 
 collect_cluster_diagnostics "cluster2" "${KUBECONFIG2}" "${CLUSTER2_CONTEXT}"
+
+# Check for nettest image pull failures in subctl diagnose output
+echo ""
+echo "=== Checking for image pull issues ==="
+NETTEST_IMAGE_FAILED=false
+NETTEST_IMAGE_C1=""
+NETTEST_IMAGE_C2=""
+
+# Extract the actual image being used from error messages
+if grep -q "ImagePullBackOff.*nettest\|ErrImagePull.*nettest\|unauthorized.*nettest" "${OUTPUT_DIR}/cluster1/subctl-diagnose-all.txt" 2>/dev/null; then
+    NETTEST_IMAGE_C1=$(grep -oE '(registry[^"[:space:]]*nettest[^"[:space:]]*)' "${OUTPUT_DIR}/cluster1/subctl-diagnose-all.txt" 2>/dev/null | head -1)
+    echo "⚠ WARNING: Cluster1 - nettest image pull failed"
+    if [ -n "$NETTEST_IMAGE_C1" ]; then
+        echo "  Image: ${NETTEST_IMAGE_C1}"
+    fi
+    NETTEST_IMAGE_FAILED=true
+fi
+
+if grep -q "ImagePullBackOff.*nettest\|ErrImagePull.*nettest\|unauthorized.*nettest" "${OUTPUT_DIR}/cluster2/subctl-diagnose-all.txt" 2>/dev/null; then
+    NETTEST_IMAGE_C2=$(grep -oE '(registry[^"[:space:]]*nettest[^"[:space:]]*)' "${OUTPUT_DIR}/cluster2/subctl-diagnose-all.txt" 2>/dev/null | head -1)
+    echo "⚠ WARNING: Cluster2 - nettest image pull failed"
+    if [ -n "$NETTEST_IMAGE_C2" ]; then
+        echo "  Image: ${NETTEST_IMAGE_C2}"
+    fi
+    NETTEST_IMAGE_FAILED=true
+fi
+
+if [ "$NETTEST_IMAGE_FAILED" = "true" ]; then
+    echo ""
+    echo "========================================"
+    echo "ACTION REQUIRED: Fix nettest Image Access"
+    echo "========================================"
+    echo ""
+    echo "The 'subctl diagnose' test 'Checking that gateway metrics are accessible from"
+    echo "non-gateway nodes' failed because it cannot pull the nettest image."
+    echo ""
+    echo "The nettest image is configured in the Submariner CR (spec.repository and spec.version)."
+    echo ""
+    echo "Common causes:"
+    echo "  - Air-gapped/disconnected deployment: nettest image not mirrored to local registry"
+    echo "  - Registry authentication: credentials not configured for image pull"
+    echo "  - Network issues: cannot reach the configured image registry"
+    echo ""
+    echo "Recommended actions:"
+    echo "  1. Mirror the nettest image to your accessible registry (for air-gapped deployments)"
+    echo "  2. Configure image pull secrets if registry requires authentication"
+    echo "  3. Update Submariner CR spec.imageOverrides to use accessible image location"
+    echo "  4. Re-run this diagnostic collection script after fixing image availability"
+    echo ""
+    echo "Note: This does NOT affect core Submariner functionality, only diagnostic tests."
+    echo "      The 'subctl verify' tests use quay.io/submariner/nettest:devel as a workaround."
+    echo ""
+
+    # Document in manifest
+    echo "Image Pull Issues Detected:" >> "${OUTPUT_DIR}/manifest.txt"
+    echo "  ⚠ nettest image pull failures in subctl diagnose output" >> "${OUTPUT_DIR}/manifest.txt"
+    if [ -n "$NETTEST_IMAGE_C1" ]; then
+        echo "  Cluster1 image: ${NETTEST_IMAGE_C1}" >> "${OUTPUT_DIR}/manifest.txt"
+    fi
+    if [ -n "$NETTEST_IMAGE_C2" ]; then
+        echo "  Cluster2 image: ${NETTEST_IMAGE_C2}" >> "${OUTPUT_DIR}/manifest.txt"
+    fi
+    echo "  Affected test: 'Checking that gateway metrics are accessible from non-gateway nodes'" >> "${OUTPUT_DIR}/manifest.txt"
+    echo "  Action required: Fix nettest image availability and re-run collection" >> "${OUTPUT_DIR}/manifest.txt"
+    echo "  See console output above for detailed remediation steps" >> "${OUTPUT_DIR}/manifest.txt"
+    echo "" >> "${OUTPUT_DIR}/manifest.txt"
+fi
 
 # Check tunnel status and collect tcpdump if tunnel is not connected
 echo ""
