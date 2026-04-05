@@ -107,7 +107,7 @@ diagnostics-dir/
 │   │       ├── <nodename>_ip-a.log (IP addresses)
 │   │       ├── <nodename>_iptables-save.log (iptables rules)
 │   │       ├── submariner-gateway-*-submariner-gateway.log (Gateway pod logs)
-│ │ ├── submariner-routeagent-*-submariner-routeagent.log (RouteAgent pod logs)
+│   │       ├── submariner-routeagent-*-submariner-routeagent.log (RouteAgent pod logs)
 │   │       └── pods_*.yaml (Pod status)
 │   ├── subctl-show-all.txt
 │   ├── subctl-diagnose-all.txt
@@ -1330,7 +1330,7 @@ When providing solutions:
 
 Provide a brief report following this template:
 
-```text
+````text
 ## SUBMARINER OFFLINE ANALYSIS - BRIEF REPORT
 
 **Diagnostic:** <diagnostics-path>
@@ -1371,27 +1371,23 @@ Check if required protocols are allowed between gateway nodes:
 **Security Impact:** <✓ Maintains encryption / ❌ Removes encryption>
 
 ```bash
-
 <Concrete commands to apply workaround>
-
-```text
+```
 
 **3. <Alternative Workaround> (If #2 Doesn't Work)**
 
 <Brief explanation>
 
 ```bash
-
 <Concrete commands>
-
-```text
+```
 
 ### Files Analyzed
 - List key files examined for transparency
 
 **Priority:** <HIGH/MEDIUM/LOW> - <reason>
 **Confidence:** <HIGH/MEDIUM/LOW> - <reason>
-```
+````
 
 ---
 
@@ -1399,7 +1395,7 @@ Check if required protocols are allowed between gateway nodes:
 
 Create a comprehensive report following this format:
 
-```text
+````text
 ========================================
 SUBMARINER OFFLINE ANALYSIS REPORT
 ========================================
@@ -1633,43 +1629,32 @@ Before applying any workarounds, verify that the infrastructure meets
 
 **For Standalone Submariner:**
 ```bash
-
 kubectl patch submariner -n submariner-operator submariner \
   --type merge \
   -p '{"spec": {"ceIPSecForceUDPEncaps": true}}'
 
 kubectl delete pods -n submariner-operator -l app=submariner-gateway
-
-```text
+```
 
 **For ACM-Managed Submariner:**
 ```bash
-
 # On the ACM hub cluster
-
-kubectl patch submarinerconfig -n <managed-cluster-namespace>
-<submarinerconfig-name> \
+kubectl patch submarinerconfig -n <managed-cluster-namespace> <submarinerconfig-name> \
   --type merge \
   -p '{"spec": {"ceIPSecForceUDPEncaps": true}}'
 
 # ACM will propagate changes automatically to managed clusters
-
-```text
+```
 
 **Verify the fix:**
 ```bash
-
 # Wait ~30 seconds for changes to propagate, then check
-
 subctl show connections
-
 # Expected: STATUS should change from "error" to "connected"
 
 subctl diagnose all
-
 # Expected: Gateway connection checks should pass
-
-```text
+```
 
 **Expected outcome:** Tunnel should establish using UDP port 4500 instead of ESP
   protocol 50
@@ -1696,43 +1681,32 @@ Only use this if:
 
 **For Standalone Submariner:**
 ```bash
-
 kubectl patch submariner -n submariner-operator submariner \
   --type merge \
   -p '{"spec": {"cableDriver": "vxlan"}}'
 
 kubectl delete pods -n submariner-operator -l app=submariner-routeagent
-
 # Gateway pods will restart automatically
-
-```text
+```
 
 **For ACM-Managed Submariner:**
 ```bash
-
 # On the ACM hub cluster
-
-kubectl patch submarinerconfig -n <managed-cluster-namespace>
-<submarinerconfig-name> \
+kubectl patch submarinerconfig -n <managed-cluster-namespace> <submarinerconfig-name> \
   --type merge \
   -p '{"spec": {"cableDriver": "vxlan"}}'
 
 # ACM will propagate changes automatically
-
-```text
+```
 
 **Verify the fix:**
 ```bash
-
 # Wait ~30 seconds, then check
-
 subctl show connections
-
 # Expected: CABLE DRIVER: vxlan, STATUS: connected
 
 subctl verify --only connectivity --verbose
-
-```text
+```
 
 **Trade-offs:**
 - ❌ **No encryption** - all inter-cluster traffic in clear text
@@ -1833,7 +1807,7 @@ in this direction:
 2. **Suggested port changes:**
 
    Use non-conflicting UDP ports outside the 4490-4510 range, for example:
-   - ceIPSecNATTPort: 4501 → change to 4520
+   - ceIPSecNATTPort: 4500 → change to 4520
    - nattDiscoveryPort: 4490 → change to 4480
 
 3. **Further investigation:**
@@ -1870,7 +1844,7 @@ Confidence: <HIGH/MEDIUM/LOW> - <reason based on evidence quality and certainty>
 
 **Note:** This analysis is based on offline diagnostic data. Live cluster
   testing may reveal additional factors not visible in the collected snapshots.
-```
+````
 
 ### Phase 7: Answer Follow-up Questions
 

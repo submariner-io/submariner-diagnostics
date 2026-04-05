@@ -1,6 +1,7 @@
-# Submariner Diagnostic Toolkit
+# submariner-diagnostics
 
-Comprehensive toolkit for collecting and analyzing Submariner diagnostics.
+Contains tools and scripts for collecting data and diagnosing issues in Submariner deployments
+
 Collect diagnostics once from live clusters, then analyze **offline** anytime -
 no cluster access needed for analysis.
 

@@ -1,17 +1,4 @@
 ---
-# Markdownlint configuration for Submariner Diagnostics
-# Based on default rules with project-specific adjustments
-
-# MD013/line-length - Line length
 line-length:
-  # Set to 80 characters (standard for code and markdown)
-  line_length: 80
-  # Allow longer lines in code blocks, tables, and headings
-  code_blocks: false
-  tables: false
-  headings: false
-
-# MD024/no-duplicate-heading - Multiple headings with the same content
-# Disable this rule because the documentation uses contextual section names
-# like "Analysis", "Prerequisites", "Expected", etc. in different diagnostic sections
+  line_length: 140
 no-duplicate-heading: false
