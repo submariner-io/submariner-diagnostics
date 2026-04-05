@@ -1163,22 +1163,61 @@ Expected: 1 pod with label "active", N pods with label "passive"
 Found:    2+ pods with label "active"  ← Potential issue!
 ```
 
-#### IMPORTANT - Check Priority
+#### IMPORTANT - Gateway CR is Source of Truth
 
-1. **FIRST:** Verify Gateway CR `status.gateways[].haStatus` - only ONE should
-  be "active"
-   - If multiple Gateway resources show haStatus: active → **CRITICAL issue**
-   - If Gateway CR shows 1 active correctly → pod label sync issue (less
-     critical)
+**The Gateway CR `status.gateways[].haStatus` is the authoritative source for
+active/passive status, NOT pod labels.**
 
-#### This may indicate an HA label synchronization issue
+1. **FIRST:** Check Gateway CR for HA status:
 
-1. **Possible Root Cause:**
-   - Pod labels may be out of sync with Gateway CR HA state
-   - Could indicate a race condition in gateway HA election logic
-   - Might occur during gateway failovers or pod restarts
+   File: `cluster*/gather/cluster*/submariners_submariner-operator_submariner.yaml`
 
-2. **Possible Impact on Load Balancer:**
+   ```yaml
+   status:
+     gateways:
+     - haStatus: active    # Only ONE should be "active"
+       localEndpoint:
+         hostname: node1
+     - haStatus: passive   # Others should be "passive"
+       localEndpoint:
+         hostname: node2
+   ```
+
+   - If multiple Gateway CRs show haStatus: active → **CRITICAL: Gateway HA
+     election failure**
+   - If Gateway CR shows 1 active correctly → Pod labels are secondary concern
+
+2. **SECOND:** Cross-check Gateway CR between clusters:
+
+   Verify both clusters agree on which gateway is active. Check
+   `status.gateways[]` in both cluster1 and cluster2 Submariner CRs.
+
+3. **THIRD:** Check if LoadBalancer service is in use:
+
+   File: `cluster*/gather/cluster*/submariners_submariner-operator_submariner.yaml`
+
+   ```yaml
+   spec:
+     hostedCluster: true          # Hosted cluster deployment
+     loadBalancerEnabled: true    # Using LoadBalancer service
+   ```
+
+   **Severity depends on LoadBalancer usage:**
+
+   - **WITHOUT LoadBalancer** (hostedCluster: false OR loadBalancerEnabled:
+     false):
+     - Multiple pods labeled "active" is **MINOR issue**
+     - Pod label sync issue, but does not affect traffic routing
+     - Gateway CR is used for HA logic, not pod labels
+
+   - **WITH LoadBalancer** (hostedCluster: true AND loadBalancerEnabled: true):
+     - Multiple pods labeled "active" is **CRITICAL issue**
+     - LoadBalancer service selector uses `gateway.submariner.io/status: active`
+     - Traffic splits between multiple nodes
+     - Only one pod has actual tunnel connection
+     - Results in ~50% packet loss
+
+4. **Why This Matters for LoadBalancer:**
 
    ```yaml
    # Load Balancer Service selector
@@ -1188,30 +1227,33 @@ Found:    2+ pods with label "active"  ← Potential issue!
        gateway.submariner.io/status: active  # Matches ALL pods labeled "active"
    ```
 
-   - If LoadBalancer service uses selector `gateway.submariner.io/status:
-     active`
-   - AND 2 pods are labeled "active" → LB might route to 2 nodes
-   - Traffic could be split between nodes
-   - Only 1 pod typically has actual tunnel connection
-   - Could result in packet loss or random tunnel failures
-
-3. **Why This Might Cause Issues:**
-   - If load balancer distributes packets to both pods
-   - Packets to correct node (actually active) → likely succeed
-   - Packets to wrong node (labeled active, but should be passive) → might be
-     dropped
+   - If 2 pods labeled "active" → LB routes to both nodes
+   - Packets to correct node (actually active per Gateway CR) → succeed
+   - Packets to wrong node (labeled active, but passive per Gateway CR) → dropped
    - Could explain intermittent connectivity issues
 
 #### Recommended Analysis Output
 
-If multiple active pod labels detected:
+**WITHOUT LoadBalancer** (hostedCluster: false OR loadBalancerEnabled: false):
 
 ```text
-Pod Label Issue Detected:
+Minor Issue: Pod Label Sync
+  - Gateway CR shows: 1 active, 1 passive (authoritative source - CORRECT)
+  - Pod labels show: 2 active, 0 passive (out of sync - cosmetic issue)
+  - Severity: MINOR
+  - Impact: None (Gateway CR is used for HA logic, not pod labels)
+  - Recommendation: Monitor - pod labels should sync eventually
+```
+
+**WITH LoadBalancer** (hostedCluster: true AND loadBalancerEnabled: true):
+
+```text
+CRITICAL Issue: Pod Label Sync Affecting LoadBalancer
   - Gateway CR shows: 1 active, 1 passive (authoritative source - correct)
-  - Pod labels show: 2 active, 0 passive (may be out of sync)
-  - This could affect load balancer traffic distribution if LB uses pod label selector
-  - Traffic split causes ~50% packet loss
+  - Pod labels show: 2 active, 0 passive (out of sync)
+  - LoadBalancer service enabled: YES
+  - Severity: CRITICAL
+  - Impact: LoadBalancer routes traffic to both pods, causing ~50% packet loss
 
 IMMEDIATE FIX:
   # Fix the label on passive pod (node that SHOULD be passive per Gateway CR)
@@ -1233,7 +1275,7 @@ COLLECT LOGS FOR BUG REPORT:
 
   3. File bug with Submariner project:
      <https://github.com/submariner-io/submariner/issues>
-     Title: "Gateway HA label sync race condition - multiple active pods"
+     Title: "Gateway HA label sync race condition - multiple active pods with LoadBalancer"
      Include: Gateway CR, pod YAMLs, operator logs, gateway pod logs, release version
 ```
 

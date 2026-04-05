@@ -1313,6 +1313,12 @@ class SubmarinerAnalyzer:
             if not gateway_cr:
                 continue
 
+            # Get LoadBalancer configuration from Gateway CR spec
+            spec = gateway_cr.get('spec', {})
+            hosted_cluster = spec.get('hostedCluster', False)
+            lb_enabled = spec.get('loadBalancerEnabled', False)
+            using_loadbalancer = hosted_cluster and lb_enabled
+
             # Get expected HA state from Gateway CR
             gateways = gateway_cr.get('status', {}).get('gateways', [])
             expected_active_count = sum(1 for gw in gateways if gw.get('haStatus') == 'active')
@@ -1349,52 +1355,77 @@ class SubmarinerAnalyzer:
 
             # Check for mismatch
             if len(active_pods) > 1:
-                print(f"  {Colors.WARNING}⚠ Pod label issue detected:{Colors.ENDC} {cluster}: {len(active_pods)} pods labeled 'active'")
-                print(f"    Expected: 1 active gateway pod")
-                print(f"    Found: {len(active_pods)} pods labeled 'active':")
+                # Determine severity based on LoadBalancer usage
+                if using_loadbalancer:
+                    severity = "CRITICAL"
+                    severity_color = Colors.FAIL
+                else:
+                    severity = "MINOR"
+                    severity_color = Colors.WARNING
+
+                print(f"  {severity_color}{severity} - Pod label issue detected:{Colors.ENDC} {cluster}: {len(active_pods)} pods labeled 'active'")
+                print(f"    Gateway CR (source of truth): {expected_active_count} active, {expected_passive_count} passive")
+                print(f"    Pod labels (out of sync): {len(active_pods)} active, {len(passive_pods)} passive")
+                print(f"    LoadBalancer service enabled: {'YES' if using_loadbalancer else 'NO'}")
+                print(f"    Severity: {severity}")
+                print(f"\n    Pods labeled 'active':")
                 for pod_name, node_name in active_pods:
                     # Check if this is the expected active node
                     expected = " (expected active per Gateway CR)" if node_name == expected_active_node else " (should be passive per Gateway CR)"
                     print(f"      - {pod_name} on node {node_name}{expected}")
 
-                print(f"\n  {Colors.WARNING}Possible Issue:{Colors.ENDC}")
-                print(f"    Pod labels may be out of sync with Gateway CR HA state.")
-                print(f"    This could indicate a race condition in gateway HA election logic.")
-                print(f"\n  {Colors.WARNING}Possible Impact:{Colors.ENDC}")
-                print(f"    - If using LoadBalancer service with selector 'gateway.submariner.io/status=active'")
-                print(f"    - Load balancer might route to ALL {len(active_pods)} pods (traffic split)")
-                print(f"    - Only 1 pod has actual tunnel connection")
-                print(f"    - Result: ~{100 // len(active_pods)}% packet loss, random tunnel failures")
-                print(f"\n  {Colors.WARNING}IMMEDIATE FIX:{Colors.ENDC}")
+                if using_loadbalancer:
+                    # CRITICAL: LoadBalancer is routing to multiple pods
+                    print(f"\n  {Colors.FAIL}CRITICAL IMPACT:{Colors.ENDC}")
+                    print(f"    - LoadBalancer service routes to ALL {len(active_pods)} pods with label 'active'")
+                    print(f"    - Only 1 pod has actual tunnel connection (per Gateway CR)")
+                    print(f"    - Result: ~{100 // len(active_pods)}% packet loss, random tunnel failures")
+                    print(f"\n  {Colors.WARNING}IMMEDIATE FIX:{Colors.ENDC}")
 
-                # Identify which pods need label correction
-                for pod_name, node_name in active_pods:
-                    if node_name != expected_active_node:
-                        print(f"    kubectl label pod -n submariner-operator {pod_name} \\")
-                        print(f"      gateway.submariner.io/status=passive --overwrite")
+                    # Identify which pods need label correction
+                    for pod_name, node_name in active_pods:
+                        if node_name != expected_active_node:
+                            print(f"    kubectl label pod -n submariner-operator {pod_name} \\")
+                            print(f"      gateway.submariner.io/status=passive --overwrite")
 
-                print(f"\n  {Colors.WARNING}WORKAROUND (if issue recurs):{Colors.ENDC}")
-                print(f"    Change externalTrafficPolicy from 'Local' to 'Cluster':")
-                print(f"    kubectl patch service -n submariner-operator submariner-gateway \\")
-                print(f"      --type merge -p '{{\"spec\": {{\"externalTrafficPolicy\": \"Cluster\"}}}}'")
+                    print(f"\n  {Colors.WARNING}WORKAROUND (if issue recurs):{Colors.ENDC}")
+                    print(f"    Change externalTrafficPolicy from 'Local' to 'Cluster':")
+                    print(f"    kubectl patch service -n submariner-operator submariner-gateway \\")
+                    print(f"      --type merge -p '{{\"spec\": {{\"externalTrafficPolicy\": \"Cluster\"}}}}'")
 
-                print(f"\n  {Colors.WARNING}RECOMMENDED:{Colors.ENDC}")
-                print(f"    1. Collect operator logs for HA election analysis:")
-                print(f"       kubectl logs -n submariner-operator deployment/submariner-operator > operator.log")
-                print(f"    2. Collect gateway pod logs from ALL gateway pods:")
-                for pod_name, node_name in active_pods:
-                    print(f"       kubectl logs -n submariner-operator {pod_name} > {pod_name}.log")
-                for pod_name, node_name in passive_pods:
-                    print(f"       kubectl logs -n submariner-operator {pod_name} > {pod_name}.log")
-                print(f"    3. File a bug report with Submariner project:")
-                print(f"       https://github.com/submariner-io/submariner/issues")
-                print(f"       Include: Gateway CR, pod YAMLs, operator logs, gateway logs")
-                print(f"       Release version: {gateway_cr.get('status', {}).get('version', 'unknown')}")
+                    print(f"\n  {Colors.WARNING}RECOMMENDED:{Colors.ENDC}")
+                    print(f"    1. Collect operator logs for HA election analysis:")
+                    print(f"       kubectl logs -n submariner-operator deployment/submariner-operator > operator.log")
+                    print(f"    2. Collect gateway pod logs from ALL gateway pods:")
+                    for pod_name, node_name in active_pods:
+                        print(f"       kubectl logs -n submariner-operator {pod_name} > {pod_name}.log")
+                    for pod_name, node_name in passive_pods:
+                        print(f"       kubectl logs -n submariner-operator {pod_name} > {pod_name}.log")
+                    print(f"    3. File a bug report with Submariner project:")
+                    print(f"       https://github.com/submariner-io/submariner/issues")
+                    print(f"       Title: Gateway HA label sync with LoadBalancer")
+                    print(f"       Include: Gateway CR, pod YAMLs, operator logs, gateway logs")
+                    print(f"       Release version: {gateway_cr.get('status', {}).get('version', 'unknown')}")
 
-                self.faulty_states.append(f"{cluster}: Multiple active gateway pods detected (HA label sync bug)")
-                self.issues.append(f"{cluster}: CRITICAL - {len(active_pods)} gateway pods labeled 'active' (expected 1)")
-                self.recommendations.append(f"{cluster}: Fix pod labels immediately - correct passive pod labels to prevent load balancer traffic splitting")
-                self.recommendations.append(f"{cluster}: File bug with Submariner - HA election race condition causing label sync issues")
+                    self.faulty_states.append(f"{cluster}: Multiple active gateway pods with LoadBalancer (HA label sync bug)")
+                    self.issues.append(f"{cluster}: CRITICAL - {len(active_pods)} gateway pods labeled 'active' with LoadBalancer enabled (~{100 // len(active_pods)}% packet loss)")
+                    self.recommendations.append(f"{cluster}: Fix pod labels immediately - LoadBalancer traffic splitting causing packet loss")
+                    self.recommendations.append(f"{cluster}: File bug with Submariner - HA election race condition with LoadBalancer")
+                else:
+                    # MINOR: No LoadBalancer, Gateway CR is used for HA logic
+                    print(f"\n  {Colors.WARNING}Impact:{Colors.ENDC}")
+                    print(f"    - MINOR issue (cosmetic)")
+                    print(f"    - Gateway CR is used for HA logic, not pod labels")
+                    print(f"    - No traffic impact (LoadBalancer service not enabled)")
+                    print(f"    - Pod labels should sync eventually")
+
+                    print(f"\n  {Colors.WARNING}Recommendation:{Colors.ENDC}")
+                    print(f"    - Monitor pod labels - they should sync automatically")
+                    print(f"    - If labels don't sync within 5 minutes, investigate operator logs")
+
+                    self.faulty_states.append(f"{cluster}: Multiple active gateway pod labels (MINOR - no LoadBalancer)")
+                    self.issues.append(f"{cluster}: MINOR - {len(active_pods)} gateway pods labeled 'active' (cosmetic, no traffic impact)")
+                    self.recommendations.append(f"{cluster}: Monitor pod labels - should sync automatically (no urgent action needed)")
 
             elif len(active_pods) == 1:
                 active_pod, active_node = active_pods[0]
