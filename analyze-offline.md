@@ -435,7 +435,7 @@ Note: The verify files contain the actual command executed at the top. Check if:
 
 1. `cluster1/routeagents.yaml` - RouteAgent status
 2. `cluster2/routeagents.yaml` - RouteAgent status
-3. `cluster1/gather/cluster*/submariner-routeagent-*.log` - RouteAgent logs
+3. `cluster1/gather/cluster*/submariner-routeagent-*-submariner-routeagent.log` - RouteAgent logs
 
 #### G2. For API Server / IP Rule / OVN Issues (NEW - Check for connectivity failures)
 
@@ -1800,9 +1800,13 @@ FURTHER INVESTIGATION STEPS
 **5. Engage Submariner Community**
 
 If the issue persists after these investigations:
-- Share the diagnostic tarball on Submariner Slack: https://kubernetes.slack.com/archives/C010RJV694M
+- Contact Submariner team via Slack: https://kubernetes.slack.com/archives/C010RJV694M
 - Open a GitHub issue: https://github.com/submariner-io/submariner/issues
-- Include the complete diagnostic tarball and investigation results
+- **Important**: Share diagnostic data safely:
+  - Use private channels or direct messages for complete diagnostic tarballs
+  - If posting publicly, sanitize sensitive data first (cluster names, IPs, credentials)
+  - Alternatively, share only relevant excerpts and error messages from the tarball
+  - The tarball contains cluster metadata, pod logs, and network configuration
 
 ========================================
 ADDITIONAL RECOMMENDATIONS

@@ -54,16 +54,18 @@ show_usage() {
     return 1 2>/dev/null || exit 1
 }
 
-# Function to test if we can create a directory with the given name
-# Returns 0 if successful, 1 if failed
+# Function to test if context name contains illegal filesystem characters
+# Returns 0 if name is safe (no illegal chars), 1 if sanitization needed
 can_create_dir_with_name() {
     local test_name="$1"
-    local test_dir="${TEMP_CONTEXT_TEST_DIR}/${test_name}"
+    local sanitized=$(sanitize_context_name "$test_name")
 
-    mkdir -p "$test_dir" 2>/dev/null
-    local result=$?
-
-    return $result
+    # If sanitized name differs from original, illegal characters were found
+    if [ "$sanitized" = "$test_name" ]; then
+        return 0  # Name is safe
+    else
+        return 1  # Name contains illegal characters
+    fi
 }
 
 # Function to sanitize context name by replacing illegal filesystem characters
@@ -87,6 +89,18 @@ collect_cluster_diagnostics() {
     echo "Running subctl gather for ${cluster_name}..."
     subctl gather --kubeconfig "${kubeconfig}" --context "${context}" --dir "${cluster_dir}/gather" 2>&1 | tee "${cluster_dir}/gather.log"
 
+    # Normalize gather directory structure for analyze-basic.py compatibility
+    # subctl gather creates cluster-specific subdirectory, but name may differ from our cluster_name
+    # We need to ensure it's named exactly as cluster_name for analyze-basic.py to find summary.html
+    ACTUAL_GATHER_SUBDIR=$(find "${cluster_dir}/gather" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null)
+    if [ -n "$ACTUAL_GATHER_SUBDIR" ]; then
+        ACTUAL_SUBDIR_NAME=$(basename "$ACTUAL_GATHER_SUBDIR")
+        if [ "$ACTUAL_SUBDIR_NAME" != "$cluster_name" ]; then
+            # Rename to match expected cluster name
+            mv "$ACTUAL_GATHER_SUBDIR" "${cluster_dir}/gather/${cluster_name}" 2>/dev/null || true
+        fi
+    fi
+
     # subctl show (connection status)
     echo "Running subctl show for ${cluster_name}..."
     subctl show all --kubeconfig "${kubeconfig}" --context "${context}" > "${cluster_dir}/subctl-show-all.txt" 2>&1
@@ -106,7 +120,16 @@ collect_cluster_diagnostics() {
     # ACM resources (if ACM hub or managed cluster)
     echo "Checking for ACM resources on ${cluster_name}..."
     kubectl get managedclusteraddon -A --kubeconfig "${kubeconfig}" --context "${context}" 2>/dev/null | grep submariner > "${cluster_dir}/acm-addons.txt" || echo "No ACM ManagedClusterAddOn resources found" > "${cluster_dir}/acm-addons.txt"
-    kubectl get submarinerconfig -A -o yaml --kubeconfig "${kubeconfig}" --context "${context}" > "${cluster_dir}/submarinerconfig.yaml" 2>&1 || echo "No SubmarinerConfig resources found" > "${cluster_dir}/submarinerconfig.yaml"
+
+    # Get SubmarinerConfig but check if there are actual objects (not just empty List)
+    SUBMARINERCONFIG_OUTPUT=$(kubectl get submarinerconfig -A -o yaml --kubeconfig "${kubeconfig}" --context "${context}" 2>&1)
+    if echo "$SUBMARINERCONFIG_OUTPUT" | grep -q "items:" && echo "$SUBMARINERCONFIG_OUTPUT" | grep -q "kind: SubmarinerConfig"; then
+        # Has actual SubmarinerConfig objects
+        echo "$SUBMARINERCONFIG_OUTPUT" > "${cluster_dir}/submarinerconfig.yaml"
+    else
+        # No objects or error
+        echo "No SubmarinerConfig resources found" > "${cluster_dir}/submarinerconfig.yaml"
+    fi
 }
 
 # Function to collect tcpdump from gateway nodes
@@ -119,8 +142,22 @@ collect_tcpdump_from_cluster() {
 
     echo "=== Collecting tcpdump from ${cluster_name} gateway nodes ==="
 
-    # Get gateway node name
-    GATEWAY_NODE=$(kubectl get pods -n submariner-operator -l app=submariner-gateway --kubeconfig="${kubeconfig}" --context="${context}" -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null)
+    # Get active gateway node from Gateway CR (authoritative source)
+    ACTIVE_GATEWAY_HOSTNAME=$(kubectl get submariner submariner -n submariner-operator --kubeconfig="${kubeconfig}" --context="${context}" -o jsonpath='{.status.gateways[?(@.haStatus=="active")].localEndpoint.hostname}' 2>/dev/null)
+
+    if [ -z "$ACTIVE_GATEWAY_HOSTNAME" ]; then
+        echo "  ⚠ No active gateway found in Gateway CR, falling back to first available gateway pod"
+        GATEWAY_NODE=$(kubectl get pods -n submariner-operator -l app=submariner-gateway --kubeconfig="${kubeconfig}" --context="${context}" -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null)
+    else
+        # Find the gateway pod running on the active gateway node
+        GATEWAY_NODE=$(kubectl get pods -n submariner-operator -l app=submariner-gateway --kubeconfig="${kubeconfig}" --context="${context}" -o jsonpath="{.items[?(@.spec.nodeName==\"${ACTIVE_GATEWAY_HOSTNAME}\")].spec.nodeName}" 2>/dev/null)
+        if [ -z "$GATEWAY_NODE" ]; then
+            echo "  ⚠ Active gateway node '${ACTIVE_GATEWAY_HOSTNAME}' not found in pod list, using first available"
+            GATEWAY_NODE=$(kubectl get pods -n submariner-operator -l app=submariner-gateway --kubeconfig="${kubeconfig}" --context="${context}" -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null)
+        else
+            echo "  ✓ Using active gateway node: ${GATEWAY_NODE} (from Gateway CR)"
+        fi
+    fi
 
     if [ -z "$GATEWAY_NODE" ]; then
         echo "  ✗ No gateway node found in ${cluster_name}, skipping tcpdump"
@@ -231,6 +268,8 @@ EOF
 
     if [ $? -ne 0 ]; then
         echo "  ✗ Failed to deploy tcpdump DaemonSet on ${cluster_name}"
+        # Attempt cleanup in case DaemonSet was partially created
+        kubectl delete daemonset submariner-tcpdump-collector -n submariner-operator --kubeconfig="${kubeconfig}" --context="${context}" >/dev/null 2>&1
         return
     fi
 
@@ -241,10 +280,11 @@ EOF
     # Wait for pod to be ready
     kubectl wait --for=condition=Ready pod -l app=submariner-tcpdump-collector -n submariner-operator --kubeconfig="${kubeconfig}" --context="${context}" --timeout=30s >/dev/null 2>&1
 
-    TCPDUMP_POD=$(kubectl get pods -n submariner-operator -l app=submariner-tcpdump-collector --kubeconfig="${kubeconfig}" --context="${context}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    # Get the tcpdump pod running on the selected gateway node
+    TCPDUMP_POD=$(kubectl get pods -n submariner-operator -l app=submariner-tcpdump-collector --kubeconfig="${kubeconfig}" --context="${context}" -o jsonpath="{.items[?(@.spec.nodeName==\"${GATEWAY_NODE}\")].metadata.name}" 2>/dev/null)
 
     if [ -z "$TCPDUMP_POD" ]; then
-        echo "  ✗ tcpdump pod not found on ${cluster_name}"
+        echo "  ✗ tcpdump pod not found on node ${GATEWAY_NODE} in ${cluster_name}"
         kubectl delete daemonset submariner-tcpdump-collector -n submariner-operator --kubeconfig="${kubeconfig}" --context="${context}" >/dev/null 2>&1
         return
     fi
@@ -880,7 +920,7 @@ echo "" >> "${OUTPUT_DIR}/manifest.txt"
 # Collect from Cluster 1
 echo "Cluster 1:" >> "${OUTPUT_DIR}/manifest.txt"
 echo "  Context: ${CLUSTER1_CONTEXT}" >> "${OUTPUT_DIR}/manifest.txt"
-echo "  Kubeconfig: ${KUBECONFIG1}" >> "${OUTPUT_DIR}/manifest.txt"
+echo "  Kubeconfig: ${KUBECONFIG1##*/}" >> "${OUTPUT_DIR}/manifest.txt"
 echo "" >> "${OUTPUT_DIR}/manifest.txt"
 
 collect_cluster_diagnostics "cluster1" "${KUBECONFIG1}" "${CLUSTER1_CONTEXT}"
@@ -888,7 +928,7 @@ collect_cluster_diagnostics "cluster1" "${KUBECONFIG1}" "${CLUSTER1_CONTEXT}"
 # Collect from Cluster 2
 echo "Cluster 2:" >> "${OUTPUT_DIR}/manifest.txt"
 echo "  Context: ${CLUSTER2_CONTEXT}" >> "${OUTPUT_DIR}/manifest.txt"
-echo "  Kubeconfig: ${KUBECONFIG2}" >> "${OUTPUT_DIR}/manifest.txt"
+echo "  Kubeconfig: ${KUBECONFIG2##*/}" >> "${OUTPUT_DIR}/manifest.txt"
 echo "" >> "${OUTPUT_DIR}/manifest.txt"
 
 collect_cluster_diagnostics "cluster2" "${KUBECONFIG2}" "${CLUSTER2_CONTEXT}"
@@ -1114,11 +1154,14 @@ echo "  Note: This is checked per cluster and runs regardless of tunnel status"
 # Note: This detection happens before the verify section, so we need to check if gather has completed
 CNI_CLUSTER1=""
 CNI_CLUSTER2=""
-if [ -f "${OUTPUT_DIR}/cluster1/gather/cluster1/summary.html" ]; then
-    CNI_CLUSTER1=$(grep -A 1 "CNI Plugin:" "${OUTPUT_DIR}/cluster1/gather/cluster1/summary.html" 2>/dev/null | grep -oP '<td>\K[^<]+' | tail -1 | tr -d '[:space:]')
+CLUSTER1_SUMMARY=$(find "${OUTPUT_DIR}/cluster1/gather" -name summary.html -print -quit 2>/dev/null)
+CLUSTER2_SUMMARY=$(find "${OUTPUT_DIR}/cluster2/gather" -name summary.html -print -quit 2>/dev/null)
+
+if [ -n "${CLUSTER1_SUMMARY}" ]; then
+    CNI_CLUSTER1=$(grep -A 1 "CNI Plugin:" "${CLUSTER1_SUMMARY}" 2>/dev/null | grep -oP '<td>\K[^<]+' | tail -1 | tr -d '[:space:]')
 fi
-if [ -f "${OUTPUT_DIR}/cluster2/gather/cluster2/summary.html" ]; then
-    CNI_CLUSTER2=$(grep -A 1 "CNI Plugin:" "${OUTPUT_DIR}/cluster2/gather/cluster2/summary.html" 2>/dev/null | grep -oP '<td>\K[^<]+' | tail -1 | tr -d '[:space:]')
+if [ -n "${CLUSTER2_SUMMARY}" ]; then
+    CNI_CLUSTER2=$(grep -A 1 "CNI Plugin:" "${CLUSTER2_SUMMARY}" 2>/dev/null | grep -oP '<td>\K[^<]+' | tail -1 | tr -d '[:space:]')
 fi
 
 echo "  Cluster1 CNI: ${CNI_CLUSTER1:-unknown}"
@@ -1249,7 +1292,7 @@ if [ "$SKIP_VERIFY" = "false" ]; then
     echo "        Showing progress every 60 seconds..."
     echo ""
 
-    VERIFY_CMD="KUBECONFIG=${MERGED_KUBECONFIG} subctl verify --context ${CLUSTER1_NAME} --tocontext ${CLUSTER2_NAME} --only ${VERIFY_CONNECTIVITY_FLAG} --connection-timeout 50 --verbose ${IMAGE_OVERRIDE}"
+    VERIFY_CMD="KUBECONFIG=${MERGED_KUBECONFIG} subctl verify --context ${CLUSTER1_CONTEXT} --tocontext ${CLUSTER2_CONTEXT} --only ${VERIFY_CONNECTIVITY_FLAG} --connection-timeout 50 --verbose ${IMAGE_OVERRIDE}"
     echo "========================================" > "${OUTPUT_DIR}/verify/connectivity.txt"
     echo "Command executed:" >> "${OUTPUT_DIR}/verify/connectivity.txt"
     echo "${VERIFY_CMD}" >> "${OUTPUT_DIR}/verify/connectivity.txt"
@@ -1263,8 +1306,8 @@ if [ "$SKIP_VERIFY" = "false" ]; then
 
     (
         KUBECONFIG="${MERGED_KUBECONFIG}" subctl verify \
-            --context "${CLUSTER1_NAME}" \
-            --tocontext "${CLUSTER2_NAME}" \
+            --context "${CLUSTER1_CONTEXT}" \
+            --tocontext "${CLUSTER2_CONTEXT}" \
             --only "${VERIFY_CONNECTIVITY_FLAG}" \
             --connection-timeout 50 \
             --verbose ${IMAGE_OVERRIDE} \
@@ -1364,7 +1407,7 @@ if [ "$SKIP_VERIFY" = "false" ]; then
         echo "  Note: Showing progress every 60 seconds..."
         echo ""
 
-        VERIFY_CMD="KUBECONFIG=${MERGED_KUBECONFIG} subctl verify --context ${CLUSTER1_NAME} --tocontext ${CLUSTER2_NAME} --only connectivity --connection-timeout 50 --verbose --packet-size 400 ${IMAGE_OVERRIDE}"
+        VERIFY_CMD="KUBECONFIG=${MERGED_KUBECONFIG} subctl verify --context ${CLUSTER1_CONTEXT} --tocontext ${CLUSTER2_CONTEXT} --only connectivity --connection-timeout 50 --verbose --packet-size 400 ${IMAGE_OVERRIDE}"
         echo "========================================" > "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
         echo "Command executed:" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
         echo "${VERIFY_CMD}" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
@@ -1374,8 +1417,8 @@ if [ "$SKIP_VERIFY" = "false" ]; then
         # Run verify in background with progress monitoring
         (
             KUBECONFIG="${MERGED_KUBECONFIG}" subctl verify \
-                --context "${CLUSTER1_NAME}" \
-                --tocontext "${CLUSTER2_NAME}" \
+                --context "${CLUSTER1_CONTEXT}" \
+                --tocontext "${CLUSTER2_CONTEXT}" \
                 --only connectivity \
                 --connection-timeout 50 \
                 --verbose \
@@ -1436,18 +1479,21 @@ if [ "$SKIP_VERIFY" = "false" ]; then
         wait $VERIFY_PID 2>/dev/null || echo "Connectivity verification with small packets failed or timed out" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
         echo "  End time: $(date '+%Y-%m-%d %H:%M:%S')"
     else
-        echo "Skipping MTU test (tunnel connected on only one cluster)"
-        echo "========================================" > "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
-        echo "MTU TEST SKIPPED" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
-        echo "========================================" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
-        echo "" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
-        echo "MTU test was skipped because tunnel is only connected on one cluster." >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
-        echo "" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
-        echo "Tunnel status:" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
-        echo "  Cluster1: ${TUNNEL_STATUS_CLUSTER1}" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
-        echo "  Cluster2: ${TUNNEL_STATUS_CLUSTER2}" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
-        echo "" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
-        echo "MTU testing requires tunnel connected on both clusters." >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
+        # Only write skip message if file doesn't already exist (avoid overwriting earlier skip message)
+        if [ ! -f "${OUTPUT_DIR}/verify/connectivity-small-packet.txt" ]; then
+            echo "Skipping MTU test (tunnel connected on only one cluster)"
+            echo "========================================" > "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
+            echo "MTU TEST SKIPPED" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
+            echo "========================================" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
+            echo "" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
+            echo "MTU test was skipped because tunnel is only connected on one cluster." >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
+            echo "" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
+            echo "Tunnel status:" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
+            echo "  Cluster1: ${TUNNEL_STATUS_CLUSTER1}" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
+            echo "  Cluster2: ${TUNNEL_STATUS_CLUSTER2}" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
+            echo "" >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
+            echo "MTU testing requires tunnel connected on both clusters." >> "${OUTPUT_DIR}/verify/connectivity-small-packet.txt"
+        fi
     fi
 
     # Check if service discovery is enabled before running the test
@@ -1463,7 +1509,7 @@ if [ "$SKIP_VERIFY" = "false" ]; then
         echo "  Note: Showing progress every 60 seconds..."
         echo ""
 
-        VERIFY_CMD="KUBECONFIG=${MERGED_KUBECONFIG} subctl verify --context ${CLUSTER1_NAME} --tocontext ${CLUSTER2_NAME} --only service-discovery --connection-timeout 50 --verbose ${IMAGE_OVERRIDE}"
+        VERIFY_CMD="KUBECONFIG=${MERGED_KUBECONFIG} subctl verify --context ${CLUSTER1_CONTEXT} --tocontext ${CLUSTER2_CONTEXT} --only service-discovery --connection-timeout 50 --verbose ${IMAGE_OVERRIDE}"
         echo "========================================" > "${OUTPUT_DIR}/verify/service-discovery.txt"
         echo "Command executed:" >> "${OUTPUT_DIR}/verify/service-discovery.txt"
         echo "${VERIFY_CMD}" >> "${OUTPUT_DIR}/verify/service-discovery.txt"
@@ -1473,8 +1519,8 @@ if [ "$SKIP_VERIFY" = "false" ]; then
         # Run verify in background with progress monitoring
         (
             KUBECONFIG="${MERGED_KUBECONFIG}" subctl verify \
-                --context "${CLUSTER1_NAME}" \
-                --tocontext "${CLUSTER2_NAME}" \
+                --context "${CLUSTER1_CONTEXT}" \
+                --tocontext "${CLUSTER2_CONTEXT}" \
                 --only service-discovery \
                 --connection-timeout 50 \
                 --verbose \
@@ -1552,8 +1598,15 @@ if [ "$SKIP_VERIFY" = "false" ]; then
     echo "Checking for OVNK-specific issues..."
 
     # Detect CNI from both clusters using summary.html (more reliable than subctl show output)
-    CNI_CLUSTER1=$(grep -A 1 "CNI Plugin:" "${OUTPUT_DIR}/cluster1/gather/cluster1/summary.html" 2>/dev/null | grep -oP '<td>\K[^<]+' | tail -1 | tr -d '[:space:]')
-    CNI_CLUSTER2=$(grep -A 1 "CNI Plugin:" "${OUTPUT_DIR}/cluster2/gather/cluster2/summary.html" 2>/dev/null | grep -oP '<td>\K[^<]+' | tail -1 | tr -d '[:space:]')
+    CLUSTER1_SUMMARY=$(find "${OUTPUT_DIR}/cluster1/gather" -name summary.html -print -quit 2>/dev/null)
+    CLUSTER2_SUMMARY=$(find "${OUTPUT_DIR}/cluster2/gather" -name summary.html -print -quit 2>/dev/null)
+
+    if [ -n "${CLUSTER1_SUMMARY}" ]; then
+        CNI_CLUSTER1=$(grep -A 1 "CNI Plugin:" "${CLUSTER1_SUMMARY}" 2>/dev/null | grep -oP '<td>\K[^<]+' | tail -1 | tr -d '[:space:]')
+    fi
+    if [ -n "${CLUSTER2_SUMMARY}" ]; then
+        CNI_CLUSTER2=$(grep -A 1 "CNI Plugin:" "${CLUSTER2_SUMMARY}" 2>/dev/null | grep -oP '<td>\K[^<]+' | tail -1 | tr -d '[:space:]')
+    fi
 
     echo "  Cluster1 CNI: ${CNI_CLUSTER1:-unknown}"
     echo "  Cluster2 CNI: ${CNI_CLUSTER2:-unknown}"
@@ -1570,7 +1623,11 @@ if [ "$SKIP_VERIFY" = "false" ]; then
     # Check if connectivity tests failed
     CONNECTIVITY_FAILED=false
     if [ -f "${OUTPUT_DIR}/verify/connectivity.txt" ]; then
-        if grep -qE "FAIL|Failed|timed out|stopped early" "${OUTPUT_DIR}/verify/connectivity.txt" 2>/dev/null; then
+        # First check if test passed (avoid false positives from "0 Failed" in success summaries)
+        if grep -qE 'SUCCESS!|[0-9]+\s+Passed.*0\s+Failed' "${OUTPUT_DIR}/verify/connectivity.txt" 2>/dev/null; then
+            CONNECTIVITY_FAILED=false
+        # Only if not successful, check for actual failures
+        elif grep -qE 'FAIL\b|timed out|stopped early|[1-9][0-9]*\s+Failed' "${OUTPUT_DIR}/verify/connectivity.txt" 2>/dev/null; then
             CONNECTIVITY_FAILED=true
         fi
     fi
@@ -1580,8 +1637,11 @@ if [ "$SKIP_VERIFY" = "false" ]; then
     if [ -f "${OUTPUT_DIR}/verify/connectivity-small-packet.txt" ]; then
         # Check if test was actually run (not skipped)
         if ! grep -qE "SKIPPED|MTU TEST SKIPPED|SMALL PACKET TEST SKIPPED" "${OUTPUT_DIR}/verify/connectivity-small-packet.txt" 2>/dev/null; then
-            # Test was run - check if it failed
-            if grep -qE "FAIL|Failed|timed out|stopped early" "${OUTPUT_DIR}/verify/connectivity-small-packet.txt" 2>/dev/null; then
+            # Test was run - check if it failed (avoid false positives from "0 Failed" in success summaries)
+            if grep -qE 'SUCCESS!|[0-9]+\s+Passed.*0\s+Failed' "${OUTPUT_DIR}/verify/connectivity-small-packet.txt" 2>/dev/null; then
+                SMALL_PACKET_FAILED=false
+            # Only if not successful, check for actual failures
+            elif grep -qE 'FAIL\b|timed out|stopped early|[1-9][0-9]*\s+Failed' "${OUTPUT_DIR}/verify/connectivity-small-packet.txt" 2>/dev/null; then
                 SMALL_PACKET_FAILED=true
             fi
         fi
@@ -1596,7 +1656,7 @@ if [ "$SKIP_VERIFY" = "false" ]; then
         echo "  Start time: $(date '+%Y-%m-%d %H:%M:%S')"
         echo ""
 
-        VERIFY_CMD="KUBECONFIG=${MERGED_KUBECONFIG} subctl verify --context ${CLUSTER1_NAME} --tocontext ${CLUSTER2_NAME} --only connectivity --connection-timeout 50 --verbose --skip-src-ip-check ${IMAGE_OVERRIDE}"
+        VERIFY_CMD="KUBECONFIG=${MERGED_KUBECONFIG} subctl verify --context ${CLUSTER1_CONTEXT} --tocontext ${CLUSTER2_CONTEXT} --only connectivity --connection-timeout 50 --verbose --skip-src-ip-check ${IMAGE_OVERRIDE}"
         echo "========================================" > "${OUTPUT_DIR}/verify/connectivity-skip-src-ip-check.txt"
         echo "Command executed:" >> "${OUTPUT_DIR}/verify/connectivity-skip-src-ip-check.txt"
         echo "${VERIFY_CMD}" >> "${OUTPUT_DIR}/verify/connectivity-skip-src-ip-check.txt"
@@ -1615,8 +1675,8 @@ if [ "$SKIP_VERIFY" = "false" ]; then
         # Run verify with --skip-src-ip-check
         (
             KUBECONFIG="${MERGED_KUBECONFIG}" subctl verify \
-                --context "${CLUSTER1_NAME}" \
-                --tocontext "${CLUSTER2_NAME}" \
+                --context "${CLUSTER1_CONTEXT}" \
+                --tocontext "${CLUSTER2_CONTEXT}" \
                 --only connectivity \
                 --connection-timeout 50 \
                 --verbose \
@@ -1664,10 +1724,14 @@ fi
 # Create tarball
 echo ""
 echo "Creating tarball..."
-tar -czf "${OUTPUT_DIR}.tar.gz" "${OUTPUT_DIR}"
-
-# Cleanup directory (keep only tarball)
-rm -rf "${OUTPUT_DIR}"
+if tar -czf "${OUTPUT_DIR}.tar.gz" "${OUTPUT_DIR}"; then
+    # Cleanup directory (keep only tarball)
+    rm -rf "${OUTPUT_DIR}"
+else
+    echo "ERROR: Failed to create ${OUTPUT_DIR}.tar.gz"
+    echo "Keeping ${OUTPUT_DIR} for inspection."
+    return 1 2>/dev/null || exit 1
+fi
 
 COLLECTION_END_TIME=$(date +%s)
 COLLECTION_DURATION=$((COLLECTION_END_TIME - COLLECTION_START_TIME))
