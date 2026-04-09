@@ -1279,6 +1279,28 @@ COLLECT LOGS FOR BUG REPORT:
      Include: Gateway CR, pod YAMLs, operator logs, gateway pod logs, release version
 ```
 
+**INCOMPLETE DATA (Gateway CR Missing):**
+
+If Gateway CR is not available (e.g., due to gather failure):
+
+```text
+Cannot Determine Severity: Multiple Active Gateway Pods
+  - subctl diagnose reports: Multiple gateway pods labeled "active"
+  - Gateway CR: NOT AVAILABLE (gather failed)
+  - Cannot determine: Which node is truly active per Gateway CR
+  - Cannot check: If LoadBalancer service is enabled (no Submariner CR)
+  - Severity: UNKNOWN
+
+RECOMMENDATION:
+  1. Re-collect diagnostics with fixed context names to get Gateway CR
+  2. OR manually check Gateway CR with: kubectl get submariner -n submariner-operator -o yaml
+  3. Check for LoadBalancer: Look for spec.hostedCluster and spec.loadBalancerEnabled
+  4. THEN apply severity logic based on LoadBalancer usage
+
+DO NOT assume this is critical without verifying LoadBalancer usage.
+Without LoadBalancer, this is typically a MINOR cosmetic issue.
+```
+
 #### **Analysis 6: Service Discovery**
 
 #### Read

@@ -209,7 +209,7 @@ spec:
       - operator: Exists
       containers:
       - name: tcpdump
-        image: nicolaka/netshoot:latest
+        image: quay.io/submariner/nettest:devel
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -240,9 +240,9 @@ spec:
             tcpdump -r /tmp/gateway-traffic.pcap -nnv 2>/dev/null | head -50
             echo ""
 
-            # Show unique source/destination pairs
+            # Show unique source/destination pairs (using sed instead of awk for busybox compatibility)
             echo "UNIQUE SOURCE -> DESTINATION PAIRS:"
-            tcpdump -r /tmp/gateway-traffic.pcap -nnq 2>/dev/null | awk '{print \$3, "->", \$5}' | sort | uniq -c | sort -rn
+            tcpdump -r /tmp/gateway-traffic.pcap -nnq 2>/dev/null | sed -n 's/^.* \\([^ ]*\\) > \\([^ :]*\\).*/\\1 -> \\2/p' | sort | uniq -c | sort -rn
 
           } > /tmp/gateway-analysis.txt 2>&1
 
@@ -295,12 +295,12 @@ EOF
     # Wait for capture to complete
     sleep $((capture_duration + 5))
 
-    # Extract pcap file
+    # Extract pcap file (using kubectl exec instead of cp since nettest image doesn't have tar)
     echo "  Extracting files from ${cluster_name}..."
-    kubectl cp "submariner-operator/${TCPDUMP_POD}:/tmp/gateway-traffic.pcap" "${tcpdump_dir}/${cluster_name}-gateway-${GATEWAY_NODE}.pcap" --kubeconfig="${kubeconfig}" --context="${context}" 2>/dev/null
+    kubectl exec -n submariner-operator "${TCPDUMP_POD}" --kubeconfig="${kubeconfig}" --context="${context}" -- cat /tmp/gateway-traffic.pcap > "${tcpdump_dir}/${cluster_name}-gateway-${GATEWAY_NODE}.pcap" 2>/dev/null
 
     # Extract analysis file
-    kubectl cp "submariner-operator/${TCPDUMP_POD}:/tmp/gateway-analysis.txt" "${tcpdump_dir}/${cluster_name}-gateway-${GATEWAY_NODE}-analysis.txt" --kubeconfig="${kubeconfig}" --context="${context}" 2>/dev/null
+    kubectl exec -n submariner-operator "${TCPDUMP_POD}" --kubeconfig="${kubeconfig}" --context="${context}" -- cat /tmp/gateway-analysis.txt > "${tcpdump_dir}/${cluster_name}-gateway-${GATEWAY_NODE}-analysis.txt" 2>/dev/null
 
     # Check if files were extracted successfully
     if [ -f "${tcpdump_dir}/${cluster_name}-gateway-${GATEWAY_NODE}.pcap" ]; then
@@ -836,12 +836,9 @@ if [ "$VERSION_MISMATCH_C1" = "true" ] || [ "$VERSION_MISMATCH_C2" = "true" ]; t
         echo "  Update subctl to version v${SUBMARINER_VER_C2}"
     fi
     echo ""
-    echo -n "Continue anyway? (yes/no): "
-    read -r CONTINUE_ANSWER
-    if [ "$CONTINUE_ANSWER" != "yes" ] && [ "$CONTINUE_ANSWER" != "y" ]; then
-        echo "Collection cancelled by user."
-        return 1 2>/dev/null || exit 1
-    fi
+    echo "Note: Collection will continue automatically despite version mismatch."
+    echo "      This warning has been logged to manifest.txt for reference."
+    echo ""
     echo ""
 fi
 

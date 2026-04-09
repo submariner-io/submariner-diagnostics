@@ -244,6 +244,13 @@ local `tcpdump` installation required.
 - [Claude Code](https://claude.com/claude-code)
 - Claude subscription
 
+## Disconnected/Airgap Environments
+
+For airgap environments, ensure the following container image is mirrored to your internal registry:
+
+- **`quay.io/submariner/nettest:devel`** - Used by several components in the collection script
+  (firewall diagnostics, tcpdump collection, connectivity verification)
+
 ## Contributing
 
 Contributions welcome! Please submit issues or PRs to:
