@@ -131,8 +131,9 @@ cp analyze-offline.md ~/.claude/commands/submariner/analyze-offline.md
 /submariner:analyze-offline
 ```
 
-**Note:** The command will appear as `/submariner:analyze-offline` in Claude
-Code.
+**Note:** The command will appear as `/submariner:analyze-offline` in Claude Code.
+
+**How it works:** The skill uses modular analysis guides from `docs/analysis/` in this repository. These are automatically accessible when the skill runs - no need to copy them separately.
 
 #### Usage
 
@@ -222,6 +223,24 @@ intra-cluster`)
 - **Benefit**: Verifies VXLAN traffic allowed on vx-submariner interface
 - **Expected failures**: RouteAgent issues + verify test failures from
   non-gateway pods
+
+## Repository Structure
+
+The analysis logic is organized into modular, focused guides:
+
+- **`CLAUDE.md`** - Repository overview and analysis principles
+- **`analyze-offline.md`** - Claude Code skill entry point (install this)
+- **`docs/analysis/`** - Modular analysis guides:
+  - `tunnel-analysis.md` - Tunnel connectivity and IPsec datapath
+  - `asymmetric-tunnel-analysis.md` - Asymmetric tunnel investigation
+  - `firewall-analysis.md` - Network/firewall blocking (tcpdump)
+  - `mtu-analysis.md` - MTU and fragmentation issues
+  - `gateway-ha-analysis.md` - Gateway HA status checks
+  - `routeagent-analysis.md` - RouteAgent and OVN-specific checks
+  - `deployment-detection.md` - ACM vs Standalone detection
+  - `report-format.md` - Analysis report templates
+
+This modular structure makes the codebase easier to maintain while keeping the user experience simple (`/submariner:analyze-offline`).
 
 ## Requirements
 
