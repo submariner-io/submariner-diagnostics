@@ -44,6 +44,7 @@ Context Name Handling:
 #### Step 1: Check Environment
 
 Look for indicators in gathered data:
+
 - Cluster version/platform information
 - Node names containing "openstack" or "nova"
 - Infrastructure provider indicators
@@ -53,6 +54,7 @@ Look for indicators in gathered data:
 File: `cluster*/gather/cluster*/submariner-gateway-*-submariner-gateway.log`
 
 Search for NAT discovery timeout:
+
 ```bash
 grep -i "nat.*discovery.*timeout\|nat.*discovery.*failed" gateway.log
 ```
@@ -109,6 +111,7 @@ This could be the root cause of your tunnel connectivity issues. Consider invest
    ```
 
    **For Standalone:**
+
    ```bash
    # On each managed cluster
    kubectl patch submariner -n submariner-operator submariner \
@@ -118,7 +121,7 @@ This could be the root cause of your tunnel connectivity issues. Consider invest
    kubectl delete pods -n submariner-operator -l app=submariner-gateway
    ```
 
-3. **Further investigation:**
+1. **Further investigation:**
 
    - Verify which UDP ports OpenStack is using in your environment
    - Test connectivity with different port combinations
@@ -126,6 +129,7 @@ This could be the root cause of your tunnel connectivity issues. Consider invest
 
 **Documentation:**
 Refer to Submariner documentation for updating these settings.
+
 ```
 
 ### Important Notes

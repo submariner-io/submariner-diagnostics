@@ -175,6 +175,19 @@ kubectl label pod -n submariner-operator <passive-pod-name> \
 ```
 
 **Workaround (if issue recurs):**
+
+⚠️ **This is a workaround, not a root-cause fix.** Enables cross-node forwarding and cluster-level load balancing
+so ingress can reach pods on other nodes.
+
+**Trade-offs:**
+
+- Client source IP may no longer be preserved (SNAT may occur)
+- Traffic paths change (potential hotspots or longer routes)
+- Possible connection affinity issues
+- May have security/audit implications
+
+**Use temporarily while investigating the underlying gateway/node routing issue.**
+
 ```bash
 # Change externalTrafficPolicy to allow cross-node forwarding
 kubectl patch service -n submariner-operator submariner-gateway \
@@ -182,6 +195,7 @@ kubectl patch service -n submariner-operator submariner-gateway \
 ```
 
 **Collect logs for bug report:**
+
 ```bash
 # 1. Operator logs
 kubectl logs -n submariner-operator deployment/submariner-operator > operator.log
@@ -200,6 +214,7 @@ kubectl logs -n submariner-operator submariner-gateway-yyyyy > gateway2.log
 ### Random/Intermittent Failures
 
 If the complaint mentions:
+
 - "random failures"
 - "intermittent connectivity"
 - "works sometimes, fails other times"
@@ -209,6 +224,7 @@ If the complaint mentions:
 **→ IMMEDIATELY CHECK:** Gateway HA labels for multiple active pods
 
 This is the #1 cause of random/intermittent tunnel failures:
+
 - Multiple active pods → load balancer splits traffic → ~50% packet loss
 - Explains random success/failure pattern
 

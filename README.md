@@ -91,7 +91,11 @@ pip install pyyaml
 #### What it detects
 
 - Version compatibility issues (subctl vs Submariner)
-- **Submariner software bugs (e.g., libreswan version incompatibility)**
+- **Submariner software bugs with automatic GitHub search**
+  - Detects known bugs (e.g., libreswan version incompatibility)
+  - Searches GitHub for existing fixes or workarounds
+  - Shows PR merge dates and issue status
+  - Prevents duplicate bug reports
 - Tunnel connectivity status
 - ESP/UDP protocol blocking
 - Firewall blocking (inter-cluster and intra-cluster)
@@ -133,7 +137,8 @@ cp analyze-offline.md ~/.claude/commands/submariner/analyze-offline.md
 
 **Note:** The command will appear as `/submariner:analyze-offline` in Claude Code.
 
-**How it works:** The skill uses modular analysis guides from `docs/analysis/` in this repository. These are automatically accessible when the skill runs - no need to copy them separately.
+**How it works:** The skill uses modular analysis guides from `docs/analysis/` in this repository. These are
+automatically accessible when the skill runs - no need to copy them separately.
 
 #### Usage
 
@@ -153,8 +158,10 @@ cp analyze-offline.md ~/.claude/commands/submariner/analyze-offline.md
 
 - **MTU/fragmentation issues** (classic pattern: small packets pass, large
   packets fail)
-- **Submariner software bugs** requiring expert attention (e.g., libreswan
-  incompatibility)
+- **Submariner software bugs with GitHub search**
+  - Automatically searches for known issues and fixes
+  - Provides upgrade recommendations when fix is available
+  - Links to relevant PRs and issues
 - Infrastructure-level blocking patterns from tcpdump analysis
 - All issues detected by basic analysis
 
@@ -239,6 +246,7 @@ The analysis logic is organized into modular, focused guides:
   - `routeagent-analysis.md` - RouteAgent and OVN-specific checks
   - `deployment-detection.md` - ACM vs Standalone detection
   - `report-format.md` - Analysis report templates
+  - `special-cases.md` - Edge cases and special scenarios
 
 This modular structure makes the codebase easier to maintain while keeping the user experience simple (`/submariner:analyze-offline`).
 

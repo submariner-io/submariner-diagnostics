@@ -7,6 +7,7 @@ How to detect and diagnose MTU/fragmentation problems in Submariner connectivity
 **CRITICAL:** Always compare both verify test results to detect MTU issues.
 
 ### Data Sources
+
 - `verify/connectivity.txt` - Default packet size (~3000 bytes)
 - `verify/connectivity-small-packet.txt` - Small packet size (400 bytes)
 
@@ -31,11 +32,13 @@ How to detect and diagnose MTU/fragmentation problems in Submariner connectivity
 ### Health Check Pings vs Data Transfer
 
 **Health check pings:**
+
 - Use small ICMP packets
 - If health checks fail, MTU is NOT the root cause
 - MTU issues only appear with large data transfers, not control plane
 
 **Large data transfers:**
+
 - Use full-size packets (~3KB in verify tests)
 - Will fail if MTU is too low
 - This is where MTU issues manifest
@@ -51,11 +54,13 @@ How to detect and diagnose MTU/fragmentation problems in Submariner connectivity
 ### Step 1: Read Verify Test Results
 
 File: `verify/connectivity.txt`
+
 ```text
 Verification stopped early after 6 consecutive test failures
 ```
 
 File: `verify/connectivity-small-packet.txt`
+
 ```text
 ✓ All tests passed
 ```
@@ -67,6 +72,7 @@ If default fails but small packet succeeds → MTU issue confirmed
 ### Step 3: Check for Log Symptoms
 
 Gateway logs may show:
+
 ```text
 CREATE_CHILD_SA failed with TS_UNACCEPTABLE
 ```
@@ -75,42 +81,21 @@ CREATE_CHILD_SA failed with TS_UNACCEPTABLE
 
 ## Recommended Solutions
 
-### Immediate Workaround: TCP MSS Clamping
+### Apply TCP MSS Clamping
 
-Apply TCP MSS clamping to handle MTU restrictions:
+Use Submariner's built-in MSS clamping feature to handle fragmentation:
 
-**For Standalone Submariner:**
 ```bash
-kubectl patch submariner -n submariner-operator submariner \
-  --type merge \
-  -p '{"spec": {"connectionHealthCheck": {"maxPacketLossCount": 5}}}'
+# Apply MSS clamping annotation to gateway node
+kubectl annotate node <gateway-node> submariner.io/tcp-clamp-mss=1300
+
+# Restart routeagent pods to apply the changes
+kubectl delete pod -n submariner-operator -l app=submariner-routeagent
 ```
 
-**For ACM-Managed Submariner:**
-```bash
-# On the ACM hub cluster
-kubectl patch submarinerconfig -n <managed-cluster-namespace> <config-name> \
-  --type merge \
-  -p '{"spec": {"connectionHealthCheck": {"maxPacketLossCount": 5}}}'
-```
+**Recommended MSS value:** 1300 (conservative value for most networks)
 
-### Long-term Fix: Investigate Underlying MTU
-
-1. Check interface MTU on gateway nodes
-2. Verify path MTU discovery is working
-3. Adjust network infrastructure MTU if possible
-4. Consider enabling jumbo frames if supported
-
-## Common Misconceptions
-
-❌ **Wrong:** "Health checks are failing, must be MTU issue"  
-✓ **Correct:** Health checks use small packets - if they fail, it's NOT MTU
-
-❌ **Wrong:** "Tunnel won't connect, probably MTU"  
-✓ **Correct:** MTU issues appear AFTER tunnel is connected, during data transfer
-
-❌ **Wrong:** "CREATE_CHILD_SA TS_UNACCEPTABLE is the root cause"  
-✓ **Correct:** This is a symptom of MTU restriction, not the root cause
+**Documentation:** <https://submariner.io/getting-started/architecture/gateway-engine/> (Customize TCP MSS Clamping)
 
 ## Diagnostic Checklist
 
@@ -124,5 +109,5 @@ If all checked → **MTU issue confirmed**
 
 ## References
 
-- Submariner troubleshooting: https://submariner.io/operations/troubleshooting/
+- Submariner troubleshooting: <https://submariner.io/operations/troubleshooting/>
 - MTU and fragmentation issues in overlay networks

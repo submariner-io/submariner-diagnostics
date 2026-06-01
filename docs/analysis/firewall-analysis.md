@@ -12,10 +12,12 @@ How to analyze tcpdump data to determine if infrastructure is blocking tunnel tr
 ## Data Sources
 
 ### tcpdump Analysis Files (TEXT - Always Read These First)
+
 - `tcpdump/cluster1-gateway-<nodename>-analysis.txt`
 - `tcpdump/cluster2-gateway-<nodename>-analysis.txt`
 
 These files contain:
+
 - Total packet count
 - First 50 packets with details
 - Source/destination IP pairs
@@ -23,6 +25,7 @@ These files contain:
 - Automatic interpretation
 
 ### tcpdump Binary Files (BINARY - Reference Only)
+
 - `tcpdump/cluster1-gateway-<nodename>.pcap`
 - `tcpdump/cluster2-gateway-<nodename>.pcap`
 
@@ -31,7 +34,9 @@ These files contain:
 **IMPORTANT:** tcpdump captures BOTH incoming and outgoing packets on the gateway node interface.
 
 ### Capture Filter
+
 The filter is set based on cable driver and configuration:
+
 - **libreswan with ESP:** `proto 50`
 - **libreswan with UDP encapsulation:** `udp port 4500` (or ceIPSecNATTPort)
 - **vxlan:** `udp port 4500` (or ceIPSecNATTPort)
@@ -48,10 +53,12 @@ Cluster2 analysis: "Total packets captured: 0"
 ```
 
 **Diagnosis:**
+
 - Gateway pods are NOT sending tunnel traffic
-- Root cause: IPsec tunnel not properly initialized at kernel level
+- Appears to be: IPsec tunnel not properly initialized at kernel level (verify with additional kernel-level and IPsec logs)
 
 **Next steps:**
+
 - Check ipsec-status.log for STATE_V2_ESTABLISHED_CHILD_SA
 - Review gateway pod logs for cable driver initialization errors
 
@@ -60,22 +67,26 @@ Cluster2 analysis: "Total packets captured: 0"
 **CRITICAL:** This is the most common infrastructure blocking pattern.
 
 **Example A - Unidirectional blocking:**
+
 ```text
 Cluster1 analysis: "Total packets captured: 150" (all "Out" direction)
 Cluster2 analysis: "Total packets captured: 0"
 ```
 
 **Diagnosis:**
+
 - Packets leaving cluster1 but NOT arriving at cluster2
 - Infrastructure blocking cluster1→cluster2 direction
 
 **Example B - Bidirectional blocking:**
+
 ```text
 Cluster1 analysis: "Total packets captured: 150" (all "Out", no "In")
 Cluster2 analysis: "Total packets captured: 94" (all "Out", no "In")
 ```
 
 **Diagnosis:**
+
 - Both clusters sending packets, but NEITHER receiving
 - Infrastructure blocking tunnel traffic in BOTH directions
 - **This is the most common pattern**
@@ -90,11 +101,13 @@ Cluster2 analysis: "Total packets captured: 150" (bidirectional)
 ```
 
 **Diagnosis:**
+
 - Packets flowing in both directions
 - But tunnel status still shows "error"
-- Root cause: Health check IP issue or packet corruption
+- Most likely cause: Health check IP issue or packet corruption (verify with additional kernel-level and IPsec logs)
 
 **Next steps:**
+
 - Check: Are packets reaching the right destination IPs?
 - Review: Source/destination pairs in analysis file
 - Verify: Health check IPs exist on gateway nodes
@@ -106,6 +119,7 @@ Cluster2 analysis: "Total packets captured: 150" (bidirectional)
 #### Step 1: Determine Protocol Being Used
 
 Check Gateway CR:
+
 ```yaml
 status:
   gateways:
@@ -117,6 +131,7 @@ status:
 ```
 
 Also check Submariner CR:
+
 ```yaml
 spec:
   ceIPSecForceUDPEncaps: true  # If true, UDP encapsulation forced
@@ -125,9 +140,32 @@ spec:
 #### Step 2: Apply Appropriate Workaround
 
 **If using ESP (proto 50):**
-→ Recommend enabling UDP encapsulation (see workarounds/udp-encapsulation.md)
+
+Enable UDP encapsulation to work around ESP blocking:
+
+**For ACM-Managed Submariner:**
+
+```bash
+# On the ACM hub cluster
+kubectl patch submarinerconfig -n <managed-cluster-namespace> <config-name> \
+  --type merge \
+  -p '{"spec": {"ceIPSecForceUDPEncaps": true, "ceIPSecNATTPort": 4500}}'
+```
+
+**For Standalone Submariner:**
+
+```bash
+# On each managed cluster
+kubectl patch submariner -n submariner-operator submariner \
+  --type merge \
+  -p '{"spec": {"ceIPSecForceUDPEncaps": true, "ceIPSecNATTPort": 4500}}'
+
+# Restart gateway pods to apply changes
+kubectl rollout restart daemonset -n submariner-operator submariner-gateway
+```
 
 **If already using UDP:**
+
 → Verify firewall allows the UDP port (default 4500)
 → Check ceIPSecNATTPort setting if custom port is used
 

@@ -62,10 +62,12 @@ Check if required protocols are allowed between gateway nodes:
 ```
 
 ### Files Analyzed
+
 - List key files examined for transparency
 
 **Priority:** <HIGH/MEDIUM/LOW> - <reason>
 **Confidence:** <HIGH/MEDIUM/LOW> - <reason>
+
 ```
 
 ### Brief Report Guidelines
@@ -204,6 +206,7 @@ Confidence: <HIGH/MEDIUM/LOW> - <reason>
 ### Use Cautious, Probabilistic Language
 
 **Good Examples:**
+
 - "appears to be"
 - "most likely"
 - "seems to indicate"
@@ -212,6 +215,7 @@ Confidence: <HIGH/MEDIUM/LOW> - <reason>
 - "might be related to"
 
 **Bad Examples (too definitive):**
+
 - "This is"
 - "The root cause is"
 - "Definitely"
@@ -228,12 +232,14 @@ Confidence: <HIGH/MEDIUM/LOW> - <reason>
 ### Example Comparison
 
 ❌ **Bad (too definitive):**
+
 ```text
 This is a gateway-to-gateway datapath failure. ESP protocol packets are being 
 blocked by network infrastructure. The solution is to enable UDP encapsulation.
 ```
 
 ✓ **Good (appropriately cautious):**
+
 ```text
 Based on the evidence, this **appears to be** a gateway-to-gateway datapath 
 failure, **most likely caused by** ESP protocol packets being blocked at the 
@@ -246,6 +252,7 @@ though further investigation may be needed if UDP port 4500 is also restricted.
 Always detect deployment type (see deployment-detection.md) and provide appropriate commands:
 
 ### For ACM-Managed
+
 ```bash
 # On the ACM hub cluster
 kubectl patch submarinerconfig -n <managed-cluster-namespace> <config-name> \
@@ -256,6 +263,7 @@ kubectl patch submarinerconfig -n <managed-cluster-namespace> <config-name> \
 ```
 
 ### For Standalone
+
 ```bash
 # On each managed cluster
 kubectl patch submariner -n submariner-operator submariner \
@@ -268,11 +276,13 @@ kubectl delete pods -n submariner-operator -l app=submariner-gateway
 ## Priority and Confidence Levels
 
 ### Priority
+
 - **HIGH:** Service is down, no connectivity
 - **MEDIUM:** Degraded performance, intermittent issues
 - **LOW:** Minor issues, cosmetic problems
 
 ### Confidence
+
 - **HIGH:** Clear evidence, definitive pattern (e.g., MTU pattern)
 - **MEDIUM:** Strong evidence but multiple possible causes
 - **LOW:** Incomplete data, multiple unknowns

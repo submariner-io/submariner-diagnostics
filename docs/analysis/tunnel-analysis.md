@@ -5,6 +5,7 @@ This guide covers analyzing Submariner tunnel connectivity from collected diagno
 ## Data Sources
 
 ### Primary: Gateway CR Status
+
 File: `cluster*/gather/cluster*/submariners_submariner-operator_submariner.yaml`
 
 The Gateway CR is the authoritative source for tunnel status:
@@ -24,6 +25,7 @@ status:
 ```
 
 ### Important Fields
+
 - `backend`: Cable driver (libreswan, wireguard, vxlan)
 - `usingIP`: IP address being used for tunnel (private or public)
 - `status`: Tunnel status (connected, error, connecting)
@@ -31,7 +33,9 @@ status:
 - `healthCheckIP`: Remote cluster's health check IP target
 
 ### Hosted Cluster Configuration
+
 Check Submariner CR spec:
+
 - `spec.hostedCluster`: If true, this is a hosted control plane deployment
 - `spec.loadBalancerEnabled`: If true, load balancer services are used
 
@@ -40,6 +44,7 @@ Check Submariner CR spec:
 ### Step 1: Read Gateway CR Status
 
 Read the Gateway CR from both clusters and compare:
+
 - Connection status (connected/error/connecting)
 - Cable driver being used
 - Which IP is being used (private vs public)
@@ -49,12 +54,14 @@ Read the Gateway CR from both clusters and compare:
 **CRITICAL:** Check this before concluding infrastructure/firewall blocking.
 
 Pattern:
+
 ```text
 Cluster1 tunnel status: "connected"
 Cluster2 tunnel status: "error" (or vice versa)
 ```
 
 This asymmetric pattern could indicate:
+
 - Routing/SNAT issue (worth checking if CNI is OVN-Kubernetes)
 - Return-path filtering problem
 - Asymmetric ACL/NAT/firewall filtering
@@ -67,6 +74,7 @@ This asymmetric pattern could indicate:
 File: `cluster*/gather/cluster*/<gateway-node>_ipsec-status.log`
 
 Look for tunnel state:
+
 ```text
 #222: "submariner-cable-..." STATE_V2_ESTABLISHED_IKE_SA
 #224: "submariner-cable-..." STATE_V2_ESTABLISHED_CHILD_SA
@@ -90,6 +98,7 @@ File: `cluster*/gather/cluster*/<gateway-node>_ipsec-trafficstatus.log`
 File: `cluster*/gather/cluster*/<gateway-node>_ip-xfrm-policy.log`
 
 Check for bidirectional policies:
+
 ```text
 src 10.130.0.0/16 dst 10.131.0.0/16
     dir out priority 1761505 ptype main
@@ -104,6 +113,7 @@ src 10.130.0.0/16 dst 10.131.0.0/16
 File: `cluster*/gather/cluster*/<gateway-node>_ip-routes-table150.log`
 
 Check for routes to remote cluster CIDRs:
+
 ```text
 10.131.0.0/16 dev eth0 proto static scope link src 10.130.1.1
 ```
@@ -115,16 +125,19 @@ Check for routes to remote cluster CIDRs:
 File: `cluster*/gather/cluster*/<gateway-node>_ip-a.log`
 
 Search for the health check IP (from Gateway CR):
+
 ```bash
 grep "<healthCheckIP>" cluster*/gather/cluster*/<gateway-node>_ip-a.log
 ```
 
 Look for health check IP on veth interfaces:
+
 ```text
 inet 10.130.1.1/32 scope global veth...
 ```
 
 **Analysis:**
+
 - **If health check IP exists:** Issue is most likely NOT health check IP configuration - focus on datapath/infrastructure
 - **If health check IP is missing:** Could indicate configuration issue
 
@@ -135,6 +148,7 @@ inet 10.130.1.1/32 scope global veth...
 ### Detection
 
 Check Submariner CR:
+
 ```yaml
 spec:
   loadBalancerEnabled: true  # LoadBalancer service is in use
@@ -147,12 +161,14 @@ File: `cluster*/gather/cluster*/services_submariner-operator_submariner-gateway.
 ### How LoadBalancer Changes Traffic Flow
 
 **Without LoadBalancer:**
+
 ```
 Incoming: RemoteIP:4500 → GatewayNode:4500 → GatewayPod:4500
 Outgoing: GatewayPod:4500 → GatewayNode:4500 → RemoteIP:4500
 ```
 
 **With LoadBalancer:**
+
 ```
 Incoming: RemoteIP:4500 → LoadBalancer:4500 → GatewayNode:NodePort → GatewayPod:4500
 Outgoing: GatewayPod:4500 → LoadBalancer:4500 → RemoteIP:4500
@@ -189,7 +205,7 @@ status:
 2. ✓ `spec.externalTrafficPolicy`:
    - **`Local`** - Recommended for most deployments (preserves source IP)
    - **`Cluster`** - REQUIRED for hosted control plane clusters
-   - Reference: https://github.com/submariner-io/submariner-operator/commit/f14c74e0c8180a64e7f38a7a82afeedd45940147
+   - Reference: <https://github.com/submariner-io/submariner-operator/commit/f14c74e0c8180a64e7f38a7a82afeedd45940147>
 3. ✓ UDP ports exposed: 4490 (natt-discovery), 4500 (cable-encaps)
 4. ✓ `status.loadBalancer.ingress[].ip` - Load balancer IP assigned
 5. ✓ **NodePort allocation** - Check `spec.ports[].nodePort` values
@@ -201,15 +217,18 @@ status:
 #### Old tcpdump collection (before ICMP capture)
 
 If diagnostic was collected with older version (check capture filter):
+
 ```text
 Capture Filter: udp port 4500
 ```
 
 **Problem:** This filter will MISS incoming traffic because:
+
 - Outgoing: Captured correctly (gateway pod → port 4500)
 - Incoming: **NOT captured** (arrives on NodePort, e.g., 31410)
 
 **Expected tcpdump pattern:**
+
 ```text
 ✓ Outgoing UDP port 4500 packets: YES (to remote LB IP)
 ✗ Incoming UDP port 4500 packets: NO (normal - arrives on NodePort instead!)
@@ -220,11 +239,13 @@ Capture Filter: udp port 4500
 #### New tcpdump collection (with ICMP capture)
 
 If diagnostic was collected with current version:
+
 ```text
 Capture Filter: udp port 4500 or icmp
 ```
 
 **Analysis approach:**
+
 1. **Check outgoing UDP 4500:** Should see packets to remote LB IP
 2. **Check incoming ICMP:** Should see health check pings arriving
 3. **If ICMP arrives but tunnel still error:** Configuration issue, not infrastructure blocking
@@ -240,6 +261,13 @@ Capture Filter: udp port 4500 or icmp
 
 **Fix:** Must use `externalTrafficPolicy: Cluster` for hosted clusters
 
+```bash
+# On the affected managed cluster
+kubectl patch service -n submariner-operator submariner-gateway \
+  --type merge \
+  -p '{"spec": {"externalTrafficPolicy": "Cluster"}}'
+```
+
 #### 2. Load Balancer Not Forwarding UDP
 
 **Symptom:** Firewall test passes, but tunnel still error
@@ -247,6 +275,7 @@ Capture Filter: udp port 4500 or icmp
 **Cause:** LoadBalancer configuration doesn't forward UDP correctly
 
 **Check:**
+
 - Cloud provider LoadBalancer supports UDP (some have limitations)
 - Health check configuration (must allow UDP forwarding even when health check fails)
 
@@ -293,6 +322,7 @@ If loadBalancerEnabled: true
 ### Verification Steps with LoadBalancer
 
 **1. Verify LoadBalancer IP is reachable:**
+
 ```bash
 # From external location or another cluster
 nc -vzu <LB-IP> 4500
@@ -300,12 +330,14 @@ nc -vzu <LB-IP> 4490
 ```
 
 **2. Check if LoadBalancer is forwarding to correct NodePort:**
+
 ```bash
 # Check service configuration
 kubectl get svc -n submariner-operator submariner-gateway -o yaml | grep -A 10 "nodePort:"
 ```
 
 **3. Verify gateway pod is selected correctly:**
+
 ```bash
 # LoadBalancer forwards to pods matching this selector
 kubectl get svc -n submariner-operator submariner-gateway -o yaml | grep -A 5 "selector:"
@@ -323,6 +355,7 @@ kubectl get svc -n submariner-operator submariner-gateway -o yaml | grep -A 5 "s
 ## Diagnosis Patterns
 
 ### Pattern: Control Plane OK, Datapath Failed
+
 ```text
 IPsec status: STATE_V2_ESTABLISHED_CHILD_SA ✓
 Traffic counters: inBytes=0, outBytes=0 ✗
@@ -333,6 +366,7 @@ Gateway logs: No configuration errors ✓
 → Check tcpdump data to determine where packets are dropped
 
 ### Pattern: Asymmetric Status
+
 ```text
 Cluster1: status=connected
 Cluster2: status=error
@@ -345,6 +379,7 @@ Cluster2: status=error
 ## Important Notes
 
 - Health check ping failures are SYMPTOMS of datapath issues, not root causes
-- Look for configuration errors in logs - if none exist, issue is infrastructure-level
+- Look for configuration errors in logs - if none are found, the issue most likely appears to be infrastructure-level
+  (based on available logs; offline or missing data could change this conclusion)
 - ICMP health checks are INSIDE the IPsec tunnel - infrastructure only sees ESP/UDP packets
 - Don't conclude "ICMP blocked by firewall" - it's incorrect

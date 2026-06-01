@@ -76,18 +76,22 @@ Analysis knowledge is modular and located in `docs/analysis/`:
 Provide clear, structured output:
 
 **Issue Summary**
+
 - What appears to be happening
 - Confidence level
 
 **Root Cause Analysis**
+
 - Most likely cause (with caveats)
 - Supporting evidence from diagnostic data
 
 **Remediation Steps**
+
 - Deployment-specific commands (ACM vs Standalone)
 - Verification steps
 - Fallback options if fix doesn't work
 
 **Further Investigation**
+
 - Additional checks if remediation doesn't resolve the issue
 - When to escalate to Submariner experts

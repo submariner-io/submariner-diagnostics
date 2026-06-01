@@ -13,6 +13,7 @@ How to detect whether Submariner is deployed via ACM (ACM-Managed) or standalone
 ## Data Sources
 
 Read both files from cluster1:
+
 - `cluster1/acm-addons.txt`
 - `cluster1/submarinerconfig.yaml`
 
@@ -49,6 +50,7 @@ Configuration Requirements:
 ### Example 1: ACM-Managed
 
 File: `cluster1/acm-addons.txt`
+
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1alpha1
 kind: ManagedClusterAddOn
@@ -58,6 +60,7 @@ metadata:
 ```
 
 File: `cluster1/submarinerconfig.yaml`
+
 ```yaml
 apiVersion: submarineraddon.open-cluster-management.io/v1alpha1
 kind: SubmarinerConfig
@@ -73,11 +76,13 @@ spec:
 ### Example 2: Standalone
 
 File: `cluster1/acm-addons.txt`
+
 ```text
 No resources found
 ```
 
 File: `cluster1/submarinerconfig.yaml`
+
 ```text
 No resources found
 ```

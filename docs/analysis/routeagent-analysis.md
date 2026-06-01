@@ -20,11 +20,13 @@ Complete path: WorkerNode → LocalGW → RemoteGW → RemotePod
 ### Health Check Coverage
 
 **Gateway health check (Gateway CR status):**
+
 - Tests: LocalGW → RemoteGW (tunnel segment only)
 - Uses: Health check IP ping between gateways
 - **Limitation:** Does NOT test local routing from worker nodes
 
 **RouteAgent health check (RouteAgent CR status):**
+
 - Tests: WorkerNode → LocalGW → RemoteGW (full datapath)
 - Uses: Health check IP ping from worker nodes through local gateway to remote gateway
 - **Advantage:** Tests both segments together
@@ -69,6 +71,7 @@ RouteAgent health check: error (WorkerNode → LocalGW → RemoteGW fails)
 → Don't investigate local routing until tunnel is fixed
 
 **Next steps:**
+
 - Focus on tunnel analysis (see [tunnel-analysis.md](tunnel-analysis.md))
 - Check tcpdump data for infrastructure blocking
 - Verify firewall inter-cluster test results
@@ -87,6 +90,7 @@ RouteAgent health check: connected (WorkerNode → LocalGW → RemoteGW succeeds
 → Could also be: Gateway-specific routing problem (host network vs pod network)
 
 **Next steps:**
+
 - Verify health check IPs are correctly configured
 - Check if health check IP exists on gateway node (ip-a.log)
 - Investigate why gateway pod health check fails despite datapath working
@@ -104,9 +108,10 @@ RouteAgent health check: error (WorkerNode → LocalGW → RemoteGW fails)
 **Analysis:**
 → **Segment 1 (local routing) is broken**  
 → Tunnel works, but worker nodes can't route to local gateway  
-→ This IS a local routing issue
+→ This appears to be a local routing issue (pending further validation with logs)
 
 **Next steps:**
+
 - Check routing table on worker nodes (ip-routes-table150.log)
 - Verify routes to remote cluster CIDRs exist on worker nodes
 - Check RouteAgent pod logs on failing nodes
@@ -140,17 +145,20 @@ RouteAgent health check: connected
 File: `cluster*/gather/cluster*/<gateway-pod>-submariner-gateway.log`
 
 Look for rate limiter errors:
+
 ```text
 rate limiter Wait returned an error: rate: Wait(n=1) would exceed context deadline
 ```
 
 **Analysis:**
+
 - Count occurrences across the entire log file
 - Example: 124 errors over 3 weeks could indicate API server instability
 - **Possible Impact:** May contribute to resource sync issues, OVN controller stuck, routes not syncing
 - **Note:** Unlikely to be direct root cause of "write ip 0.0.0.0" errors, but could contribute to instability
 
 **Recommendation if found:**
+
 ```text
 Consider checking API server health:
 - oc adm top nodes (check control plane CPU/memory)
@@ -166,6 +174,7 @@ Consider checking API server health:
 File: `cluster*/gather/cluster*/<nodename>_ip-rules.log`
 
 Look for this rule:
+
 ```text
 5999: from all fwmark 0x3f0 lookup main
 ```
@@ -173,6 +182,7 @@ Look for this rule:
 #### Analysis Patterns
 
 **Pattern 1: Cluster Asymmetry (LIKELY ISSUE)**
+
 ```text
 cluster1: All nodes have "5999: from all fwmark 0x3f0 lookup main"
 cluster2: NO nodes have this rule
@@ -180,21 +190,31 @@ cluster2: NO nodes have this rule
 
 → This **appears to be** a likely root cause of connectivity failure
 
-**Why this might break Gateway pod:**
+**Possible interaction with Gateway pod:**
 
-1. OVN appears to mark Gateway pod traffic with `pkt_mark=1008` (0x3f0 in hex)
-2. IP rule 5999 could intercept marked packets → forcing main table lookup
-3. Main table typically has NO routes to remote cluster CIDRs
-4. Kernel may be unable to determine source IP → could default to 0.0.0.0
-5. sendmsg() might fail with "operation not permitted"
+This asymmetry suggests a possible routing interaction. To verify:
 
-**Why non-GW nodes might succeed despite same rule:**
+- Check if Gateway pod traffic carries `pkt_mark=1008` (0x3f0 in hex) in OVN logs
+- Verify IP rule 5999 exists: `ip rule show`
+- Confirm main routing table lacks routes to remote cluster CIDRs: `ip route show table main`
+- Review gateway pod logs for sendmsg() permission errors
 
-- Non-GW RouteAgent traffic appears to stay in OVN overlay routing
-- Seems to not match OVN marking criteria → likely not marked with fwmark 0x3f0
-- IP rule 5999 may not trigger → table 150 routes could work normally
+**If the interaction is confirmed:**
+
+This likely requires investigation at the OVN-Kubernetes or infrastructure level. Consider:
+
+- Reviewing OVN packet marking policies
+- Checking if IP rule configuration is expected for the OVN-K version in use
+- Consulting with networking team about IP rule asymmetry
+- Checking OVN-Kubernetes documentation for known issues
+
+**Why non-GW nodes might not be affected:**
+
+Non-GW RouteAgent traffic may remain in OVN overlay routing and not match the packet marking criteria,
+allowing table 150 routes to work normally.
 
 **Pattern 2: Both Clusters Have It (OK)**
+
 ```text
 cluster1: Has fwmark 0x3f0 rule
 cluster2: Has fwmark 0x3f0 rule
@@ -203,6 +223,7 @@ cluster2: Has fwmark 0x3f0 rule
 → Consistent configuration (issue is elsewhere)
 
 **Pattern 3: Neither Has It (OK)**
+
 ```text
 cluster1: No fwmark 0x3f0 rule
 cluster2: No fwmark 0x3f0 rule
@@ -214,10 +235,13 @@ cluster2: No fwmark 0x3f0 rule
 
 1. Check ALL nodes in both clusters (rule should be present on all or none)
 2. Look for OVN packet marking in `<nodename>_ovn_lr_ovn_cluster_router_policies.log`:
+
    ```text
    pkt_mark=1008
    ```
+
 3. Verify main routing table has NO routes to remote clusters:
+
    ```bash
    grep -E "<remote-cidr-1>|<remote-cidr-2>" <nodename>_ip-routes.log
    ```
@@ -235,6 +259,7 @@ cluster2: No fwmark 0x3f0 rule
 File: `cluster*/gather/cluster*/<nodename>_ovn_lr_ovn_cluster_router_routes.log`
 
 Expected:
+
 ```text
 IPv4 Routes
 Route Table <main>:
@@ -251,6 +276,7 @@ Route Table <main>:
 File: `cluster*/gather/cluster*/<nodename>_ovn_lr_ovn_cluster_router_policies.log`
 
 Expected:
+
 ```text
 Routing Policies
      20000                           ip4.dst == 172.32.0.0/16         reroute
@@ -269,11 +295,13 @@ Routing Policies
 File: `cluster*/gather/cluster*/<gateway-node>_ip-routes.log`
 
 Check that main table does NOT have remote cluster routes:
+
 ```bash
 grep "<remote-cidr>" <gateway-node>_ip-routes.log
 ```
 
 Expected:
+
 - Main table should NOT have routes to remote clusters
 - Submariner uses table 150 for remote cluster routing
 - If main table HAS these routes → unusual configuration
@@ -283,17 +311,20 @@ Expected:
 File: `cluster*/gather/cluster*/<gateway-node>_ip-routes-table150.log`
 
 Expected for OVN local gateway mode:
+
 ```text
 default via 172.28.4.1 dev ovn-k8s-mp0
 ```
 
 NOT expected (but would work):
+
 ```text
 172.32.0.0/16 via 172.28.4.2 dev ovn-k8s-mp0
 172.34.0.0/16 via 172.28.4.2 dev ovn-k8s-mp0
 ```
 
 **Analysis:**
+
 - OVN local gateway mode uses OVN Logical_Router_Static_Route, NOT Linux table 150 routes
 - Both gateway nodes (working and broken) have identical table 150: just default route
 - Actual routing happens at OVN level, not Linux routing table level
