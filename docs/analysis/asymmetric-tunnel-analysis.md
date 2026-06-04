@@ -2,6 +2,9 @@
 
 When one cluster shows "connected" but the other shows "error" or "connecting".
 
+> **See also:** [datapath-architecture.md](datapath-architecture.md) - Submariner's datapath is asymmetric by design.
+> This guide addresses asymmetric *tunnel status*, which is different from the normal asymmetric datapath.
+
 ## What is Asymmetric Status?
 
 ```text

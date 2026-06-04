@@ -2,6 +2,12 @@
 
 **CRITICAL:** Understanding Submariner's datapath is essential for diagnosing connectivity issues correctly.
 
+> **Purpose of this document:**
+> - For AI/human analyzers to **understand** how Submariner datapath works
+> - Helps identify **which segment is broken** (egress vs ingress, segment 1 vs segment 2)
+> - **NOT for end-user reports** - reports should identify the broken segment and point to Submariner experts
+> - **DO NOT recommend** manual OVN rule changes, nftables modifications, or low-level kernel tweaks in reports
+
 ## Overview
 
 Submariner uses **different datapath architectures** depending on the CNI plugin:

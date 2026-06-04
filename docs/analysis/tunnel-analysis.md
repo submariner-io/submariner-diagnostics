@@ -2,6 +2,9 @@
 
 This guide covers analyzing Submariner tunnel connectivity from collected diagnostic data.
 
+> **See also:** [datapath-architecture.md](datapath-architecture.md) - Understanding Submariner's asymmetric datapath
+> (egress via VXLAN/OVN, ingress via CNI routing) is essential for correct diagnosis.
+
 ## Data Sources
 
 ### Primary: Gateway CR Status

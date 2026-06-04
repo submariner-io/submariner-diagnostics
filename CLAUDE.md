@@ -22,6 +22,7 @@ When analyzing diagnostics, the process follows:
 
 Analysis knowledge is modular and located in `docs/analysis/`:
 
+- `datapath-architecture.md` - **Datapath fundamentals** (for understanding flow, NOT for manual fixes in reports)
 - `tunnel-analysis.md` - Tunnel connectivity and IPsec datapath issues
 - `asymmetric-tunnel-analysis.md` - Asymmetric tunnel status investigation
 - `firewall-analysis.md` - Network/firewall blocking detection (tcpdump analysis)
