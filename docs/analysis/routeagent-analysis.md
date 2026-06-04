@@ -2,6 +2,9 @@
 
 How to analyze RouteAgent status and OVN-specific routing configuration.
 
+> **See also:** [datapath-architecture.md](datapath-architecture.md) for detailed explanation of Submariner's asymmetric datapath
+> (egress vs ingress paths differ).
+
 ## CRITICAL: Understanding Datapath Segments
 
 **RouteAgent health checks test the FULL datapath, not just the tunnel!**

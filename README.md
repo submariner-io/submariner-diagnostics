@@ -238,6 +238,7 @@ The analysis logic is organized into modular, focused guides:
 - **`CLAUDE.md`** - Repository overview and analysis principles
 - **`analyze-offline.md`** - Claude Code skill entry point (install this)
 - **`docs/analysis/`** - Modular analysis guides:
+  - `datapath-architecture.md` - **Submariner datapath fundamentals** (non-OVN vs OVN)
   - `tunnel-analysis.md` - Tunnel connectivity and IPsec datapath
   - `asymmetric-tunnel-analysis.md` - Asymmetric tunnel investigation
   - `firewall-analysis.md` - Network/firewall blocking (tcpdump)
