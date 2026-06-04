@@ -91,7 +91,9 @@ Cluster2 analysis: "Total packets captured: 94" (all "Out", no "In")
 - Infrastructure blocking tunnel traffic in BOTH directions
 - **This is the most common pattern**
 
-**Root Cause:** INFRASTRUCTURE BLOCKING (firewall/network blocking tunnel traffic)
+**Appears to be:** INFRASTRUCTURE BLOCKING (firewall/network blocking tunnel traffic)
+
+*(This should be verified with additional network/firewall logs and connectivity tests.)*
 
 ### Pattern 3: Both Sending but Tunnel Still Error
 
@@ -141,7 +143,11 @@ spec:
 
 **If using ESP (proto 50):**
 
-Enable UDP encapsulation to work around ESP blocking:
+**Workaround:** Enable UDP encapsulation to bypass ESP filtering.
+
+*This forces tunnel traffic to use UDP port 4500 instead of ESP (protocol 50), working around infrastructure that blocks ESP.
+This does not fix the root cause (firewall policy) and has trade-offs: it changes the exposed protocol/port surface,
+still depends on correct firewall configuration for UDP/4500, and may have security or operational implications.*
 
 **For ACM-Managed Submariner:**
 
@@ -185,7 +191,7 @@ If tunnels are ESTABLISHED (ipsec-status shows STATE_V2_ESTABLISHED_CHILD_SA):
     → IPsec control plane is working, but datapath is broken
 
     If gateway/routeagent logs show NO configuration errors:
-      → Root cause is INFRASTRUCTURE LEVEL (firewall/network blocking)
+      → Appears to be INFRASTRUCTURE LEVEL (firewall/network blocking)
 
       Read tcpdump analysis files:
         If cluster1 analysis shows packets (Out) BUT cluster2 shows 0:

@@ -288,7 +288,7 @@ Be ready to:
 **When to Search GitHub:**
 
 When you detect software bugs in logs (e.g., libreswan errors, version incompatibilities, cable driver
-failures), automatically search GitHub for known issues and PRs before providing recommendations.
+failures), search GitHub for known issues and PRs before providing recommendations.
 
 **How to Search:**
 

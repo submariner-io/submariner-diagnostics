@@ -138,7 +138,7 @@ class SubmarinerAnalyzer:
 
     def detect_globalnet(self, cluster):
         """Detect if Globalnet is enabled from Submariner CR"""
-        submariner_cr = self.find_and_read_submariner_cr(cluster)
+        submariner_cr = self.find_and_read_gateway_cr(cluster)
         if submariner_cr and 'spec' in submariner_cr:
             return submariner_cr['spec'].get('globalCIDR', '') != ''
         return False
