@@ -960,6 +960,58 @@ class SubmarinerAnalyzer:
 
         return None
 
+    def find_and_read_routeagent_crs(self, cluster):
+        """
+        Find and read RouteAgent CRs from both possible locations:
+        1. cluster/routeagents.yaml (cluster root - preferred)
+        2. cluster/gather/<name>/routeagents_*.yaml (gather subdirectories - fallback)
+
+        Returns a list of RouteAgent CR dictionaries
+        """
+        # Try cluster root first (preferred location)
+        routeagents_file = os.path.join(self.diagnostics_dir, cluster, "routeagents.yaml")
+        if os.path.exists(routeagents_file):
+            routeagents_yaml = self.read_yaml(os.path.join(cluster, "routeagents.yaml"))
+            if routeagents_yaml:
+                # Check if it's a List with items or a single resource
+                if routeagents_yaml.get('kind') == 'List':
+                    return routeagents_yaml.get('items', [])
+                else:
+                    return [routeagents_yaml]
+
+        # Fallback: try gather subdirectories
+        gather_dir = os.path.join(self.diagnostics_dir, cluster, "gather")
+        if not os.path.exists(gather_dir):
+            return []
+
+        # Navigate through nested subdirectories
+        current_dir = gather_dir
+        depth = 0
+
+        while depth < 4:
+            all_files = os.listdir(current_dir)
+
+            # Look for routeagent YAML files in current directory
+            for file in all_files:
+                if file.startswith("routeagents_") and file.endswith(".yaml"):
+                    relative_path = os.path.relpath(os.path.join(current_dir, file), self.diagnostics_dir)
+                    ra_yaml = self.read_yaml(relative_path)
+                    if ra_yaml:
+                        if ra_yaml.get('kind') == 'List':
+                            return ra_yaml.get('items', [])
+                        else:
+                            return [ra_yaml]
+
+            # If not found, go deeper
+            subdirs = [d for d in all_files if os.path.isdir(os.path.join(current_dir, d))]
+            if not subdirs:
+                break
+
+            current_dir = os.path.join(current_dir, subdirs[0])
+            depth += 1
+
+        return []
+
     def analyze_gateway_blocking(self, gateway_cr, cluster_name):
         """Analyze Gateway CR for blocking patterns"""
         if not gateway_cr or 'status' not in gateway_cr:
@@ -1306,26 +1358,12 @@ class SubmarinerAnalyzer:
 
     def check_loadbalancer_enabled(self, cluster_name):
         """Check if LoadBalancer service is enabled from Submariner CR"""
-        # Try to find and read Submariner CR
-        # Structure: cluster1/gather/cluster1/<cluster-id>/submariners_submariner-operator_submariner.yaml
-        gather_dir = os.path.join(self.diagnostics_dir, cluster_name, "gather")
-        if not os.path.exists(gather_dir):
-            return False
-
-        # Iterate through gather subdirectories
-        for subdir1 in os.listdir(gather_dir):
-            subdir1_path = os.path.join(gather_dir, subdir1)
-            if os.path.isdir(subdir1_path):
-                # Iterate through cluster ID subdirectories
-                for subdir2 in os.listdir(subdir1_path):
-                    subdir2_path = os.path.join(subdir1_path, subdir2)
-                    if os.path.isdir(subdir2_path):
-                        for file in os.listdir(subdir2_path):
-                            if file.startswith("submariners_submariner-operator_submariner") and file.endswith(".yaml"):
-                                submariner_cr = self.read_yaml(os.path.join(cluster_name, "gather", subdir1, subdir2, file))
-                                if submariner_cr:
-                                    spec = submariner_cr.get('spec', {})
-                                    return spec.get('loadBalancerEnabled', False)
+        # Use existing find_and_read_gateway_cr which handles both single-level
+        # and nested directory layouts
+        submariner_cr = self.find_and_read_gateway_cr(cluster_name)
+        if submariner_cr:
+            spec = submariner_cr.get('spec', {})
+            return spec.get('loadBalancerEnabled', False)
         return False
 
     def check_firewall_test_results(self):
@@ -1746,19 +1784,8 @@ class SubmarinerAnalyzer:
             # Get gateway status first (gateway-to-gateway connectivity)
             gateway_status = self.get_gateway_status(cluster, actual_cluster_name)
 
-            # Read RouteAgent CRs from cluster root directory (routeagents.yaml)
-            # This file is created by: kubectl get routeagents -A -o yaml
-            routeagents_file = os.path.join(self.diagnostics_dir, cluster, "routeagents.yaml")
-
-            agents = []
-            if os.path.exists(routeagents_file):
-                routeagents_yaml = self.read_yaml(os.path.join(cluster, "routeagents.yaml"))
-                if routeagents_yaml:
-                    # Check if it's a List with items or a single resource
-                    if routeagents_yaml.get('kind') == 'List':
-                        agents = routeagents_yaml.get('items', [])
-                    else:
-                        agents = [routeagents_yaml]
+            # Read RouteAgent CRs using unified method that handles both layouts
+            agents = self.find_and_read_routeagent_crs(cluster)
 
             if not agents:
                 # RouteAgent resources were added in recent Submariner versions (last 2-3 releases)
@@ -2675,22 +2702,16 @@ class SubmarinerAnalyzer:
                         except yaml.YAMLError:
                             continue
 
-                # Check RouteAgent status
+                # Check RouteAgent status using unified method
                 routeagent_status = None
-                routeagent_files = [f for f in os.listdir(gather_dir) if f.startswith("routeagents_")]
-                for ra_file in routeagent_files:
-                    content = self.read_file(os.path.join(cluster, "gather", actual_cluster_name, ra_file))
-                    if content:
-                        try:
-                            ra_yaml = yaml.safe_load(content)
-                            if ra_yaml and 'status' in ra_yaml:
-                                remote_endpoints = ra_yaml['status'].get('remoteEndpoints', [])
-                                if isinstance(remote_endpoints, list) and remote_endpoints and isinstance(remote_endpoints[0], dict):
-                                    routeagent_status = remote_endpoints[0].get('status', None)
-                                    if routeagent_status:
-                                        break
-                        except yaml.YAMLError:
-                            continue
+                agents = self.find_and_read_routeagent_crs(cluster)
+                for ra_yaml in agents:
+                    if ra_yaml and 'status' in ra_yaml:
+                        remote_endpoints = ra_yaml['status'].get('remoteEndpoints', [])
+                        if isinstance(remote_endpoints, list) and remote_endpoints and isinstance(remote_endpoints[0], dict):
+                            routeagent_status = remote_endpoints[0].get('status', None)
+                            if routeagent_status:
+                                break
 
                 # Check for the issue pattern
                 has_ping_failure = gateway_status == 'error' and 'ping' in str(gateway_message).lower()
