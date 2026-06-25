@@ -254,41 +254,48 @@ Capture Filter: udp port 4500 or icmp
 3. **If ICMP arrives but tunnel still error:** Configuration issue, not infrastructure blocking
 4. **If NO ICMP arrives:** Investigate further (could be infrastructure or health check IP issue)
 
-### Common LoadBalancer Issues
+#### Enhanced tcpdump collection (with NodePort capture)
 
-#### 1. Wrong externalTrafficPolicy for Hosted Clusters
+**NEW:** If diagnostic was collected with LoadBalancer-enhanced version:
 
-**Symptom:** IKE negotiation stuck at STATE_V2_PARENT_I1
-
-**Cause:** `externalTrafficPolicy: Local` in hosted cluster deployment
-
-**Fix:** Must use `externalTrafficPolicy: Cluster` for hosted clusters
-
-```bash
-# On the affected managed cluster
-kubectl patch service -n submariner-operator submariner-gateway \
-  --type merge \
-  -p '{"spec": {"externalTrafficPolicy": "Cluster"}}'
+```text
+Capture Filter: udp port 4500 or icmp or udp port 30443 or udp port 32567
+LoadBalancer Service: Yes (IP: 169.63.205.145)
+  NodePort mappings: 30443 -> 4500, 32567 -> 4490
 ```
 
-#### 2. Load Balancer Not Forwarding UDP
+**Enhanced statistics available:**
 
-**Symptom:** Firewall test passes, but tunnel still error
+```text
+CAPTURE STATISTICS:
+  Tunnel packets (udp port 4500): 0
+  ICMP packets: 12
+  NodePort packets (udp port 30443 or udp port 32567): 523
 
-**Cause:** LoadBalancer configuration doesn't forward UDP correctly
+NODEPORT TRAFFIC ANALYSIS:
+  ✓ Traffic IS arriving on NodePorts (before OVN forwarding)
+  ⚠ WARNING: NodePort traffic seen, but NO tunnel traffic on ports 4500/4490
+     This suggests OVN is NOT forwarding NodePort -> gateway pod ports
+```
 
-**Check:**
+**Analysis approach with NodePort capture:**
 
-- Cloud provider LoadBalancer supports UDP (some have limitations)
-- Health check configuration (must allow UDP forwarding even when health check fails)
+| NodePort Packets | Tunnel Packets | Diagnosis                      | Action                                            |
+| ---------------- | -------------- | ------------------------------ | ------------------------------------------------- |
+| 0                | 0              | LoadBalancer/firewall blocking | Check LB, security groups, firewall rules         |
+| > 0              | 0              | **OVN forwarding failure**     | Restart ovnkube-node, check OVN, clear conntrack  |
+| > 0              | > 0            | Normal operation               | Traffic flowing correctly                         |
+| 0                | > 0            | Unexpected                     | Check if direct pod access bypassing NodePort     |
 
-#### 3. NodePort Conflicts
+**Diagnosing the failure point:**
 
-**Symptom:** Intermittent connectivity issues
+When LoadBalancer is used, the traffic path has multiple segments:
 
-**Cause:** NodePort already in use by another service
+1. **Remote LB → Local LB → NodePort** - If no NodePort traffic: issue in this segment (LB configuration, firewall, security groups)
+2. **NodePort → Gateway Pod** - If NodePort traffic present but no tunnel traffic: issue in this segment (OVN/CNI forwarding)
 
-**Check:** Verify NodePort values are unique across cluster
+These segments are outside Submariner's control. The tcpdump analysis identifies which segment appears to be failing,
+allowing further investigation of the infrastructure/platform components involved.
 
 ### Analysis Decision Tree for LoadBalancer
 

@@ -1276,40 +1276,106 @@ class SubmarinerAnalyzer:
             if packets1_out and not packets1_in and packets2_out and not packets2_in:
                 # Both sending, neither receiving - check if this is LoadBalancer-related
                 if using_loadbalancer and protocol_info['type'] == 'udp':
-                    # With LoadBalancer, incoming traffic arrives on NodePort, not service port 4500
-                    # Old capture filter (udp port 4500) won't capture incoming traffic
-                    print(f"\n  {Colors.WARNING}⚠ PATTERN DETECTED:{Colors.ENDC}")
-                    print("    Outgoing UDP packets detected, no incoming on port 4500")
-                    print("    → LoadBalancer service is enabled - incoming traffic arrives on NodePort")
-                    print("    → Cannot reliably determine infrastructure blocking from tcpdump alone")
+                    # Extract NodePort packet counts
+                    nodeport_packets1 = self.extract_nodeport_packet_count(cluster1_analysis)
+                    nodeport_packets2 = self.extract_nodeport_packet_count(cluster2_analysis)
 
-                    if has_icmp_capture:
-                        print(f"\n  {Colors.BOLD}Analysis:{Colors.ENDC}")
-                        print("    Capture filter includes ICMP - check if health check pings arrive")
-                        print("    If ICMP health checks arrive → tunnel is working, not infrastructure issue")
-                        print("    If NO ICMP arrives → investigate further")
-                    else:
-                        print(f"\n  {Colors.BOLD}Analysis:{Colors.ENDC}")
-                        print("    Old capture filter (no ICMP) - cannot determine if traffic arrives")
-                        print("    Recommend checking firewall inter-cluster test results instead")
+                    # Check if this is new enhanced capture (has NodePort stats)
+                    has_nodeport_stats = (nodeport_packets1 > 0 or nodeport_packets2 > 0 or
+                                        'NodePort packets' in (cluster1_analysis or '') or
+                                        'NodePort packets' in (cluster2_analysis or ''))
 
-                    # Check firewall test results
-                    firewall_results = self.check_firewall_test_results()
-                    if firewall_results:
-                        print(f"\n  {Colors.BOLD}Firewall Test Results:{Colors.ENDC}")
-                        if firewall_results.get('passed'):
-                            print(f"    {Colors.OKGREEN}✓{Colors.ENDC} Firewall inter-cluster test PASSED")
-                            print("    → Infrastructure is NOT blocking UDP traffic")
-                            print("    → Issue is likely configuration-related, not infrastructure")
-                            self.findings.append("Infrastructure allows UDP traffic (firewall test passed)")
+                    if has_nodeport_stats:
+                        # New enhanced tcpdump with NodePort capture
+                        print(f"\n  {Colors.BOLD}LoadBalancer Traffic Analysis:{Colors.ENDC}")
+
+                        ovn_issue_found = False
+                        lb_issue_found = False
+
+                        # Analyze Cluster 1
+                        if nodeport_packets1 > 0 and packets1_total == 0:
+                            print(f"  {Colors.FAIL}✗ Cluster1:{Colors.ENDC}")
+                            print(f"    NodePort traffic: {nodeport_packets1} packets arriving")
+                            print(f"    Gateway pod traffic: 0 packets")
+                            print(f"    → {Colors.FAIL}OVN NOT forwarding NodePort -> gateway pod{Colors.ENDC}")
+                            self.faulty_states.append("Cluster1: OVN forwarding failure (NodePort -> pod)")
+                            ovn_issue_found = True
+                        elif nodeport_packets1 == 0 and packets1_total == 0:
+                            print(f"  {Colors.FAIL}✗ Cluster1:{Colors.ENDC}")
+                            print(f"    NodePort traffic: 0 packets")
+                            print(f"    Gateway pod traffic: 0 packets")
+                            print(f"    → {Colors.FAIL}LoadBalancer not forwarding or firewall blocking{Colors.ENDC}")
+                            self.faulty_states.append("Cluster1: LoadBalancer/firewall issue")
+                            lb_issue_found = True
                         else:
-                            print(f"    {Colors.FAIL}✗{Colors.ENDC} Firewall inter-cluster test FAILED")
-                            print("    → Appears to be infrastructure blocking UDP traffic")
-                            self.issues.append(f"Infrastructure appears to be blocking {protocol_info['description']}")
-                            self.recommendations.append(f"Verify Submariner prerequisites - ensure {protocol_info['description']} is allowed between gateway nodes")
+                            print(f"  {Colors.OKGREEN}✓ Cluster1:{Colors.ENDC} Sending traffic")
+
+                        # Analyze Cluster 2
+                        if nodeport_packets2 > 0 and packets2_total == 0:
+                            print(f"  {Colors.FAIL}✗ Cluster2:{Colors.ENDC}")
+                            print(f"    NodePort traffic: {nodeport_packets2} packets arriving")
+                            print(f"    Gateway pod traffic: 0 packets")
+                            print(f"    → {Colors.FAIL}OVN NOT forwarding NodePort -> gateway pod{Colors.ENDC}")
+                            self.faulty_states.append("Cluster2: OVN forwarding failure (NodePort -> pod)")
+                            ovn_issue_found = True
+                        elif nodeport_packets2 == 0 and packets2_total == 0:
+                            print(f"  {Colors.FAIL}✗ Cluster2:{Colors.ENDC}")
+                            print(f"    NodePort traffic: 0 packets")
+                            print(f"    Gateway pod traffic: 0 packets")
+                            print(f"    → {Colors.FAIL}LoadBalancer not forwarding or firewall blocking{Colors.ENDC}")
+                            self.faulty_states.append("Cluster2: LoadBalancer/firewall issue")
+                            lb_issue_found = True
+                        else:
+                            print(f"  {Colors.OKGREEN}✓ Cluster2:{Colors.ENDC} Sending traffic")
+
+                        # Report failure point
+                        if ovn_issue_found:
+                            print(f"\n  {Colors.BOLD}Traffic Path Issue:{Colors.ENDC}")
+                            print("    Failure appears to be in: NodePort → Gateway Pod segment")
+                            print("    Traffic arrives at NodePorts but doesn't reach gateway pod")
+                            print("    This segment is handled by the CNI (OVN/networking layer)")
+                            self.recommendations.append("Traffic path failure: NodePort → Gateway Pod segment")
+                            self.recommendations.append("  Investigation needed: CNI/OVN forwarding from NodePort to pod")
+
+                        if lb_issue_found:
+                            print(f"\n  {Colors.BOLD}Traffic Path Issue:{Colors.ENDC}")
+                            print("    Failure appears to be in: LoadBalancer → NodePort segment")
+                            print("    No traffic arriving at NodePorts from LoadBalancer")
+                            print("    This segment involves LB configuration, firewall, and security groups")
+                            self.recommendations.append("Traffic path failure: LoadBalancer → NodePort segment")
+                            self.recommendations.append("  Investigation needed: LB backend pool, security groups, firewall rules")
+
                     else:
-                        print(f"\n  {Colors.WARNING}Note:{Colors.ENDC} No firewall test results available")
-                        self.recommendations.append("Run firewall inter-cluster test to verify UDP connectivity")
+                        # Old tcpdump format without NodePort capture
+                        print(f"\n  {Colors.WARNING}⚠ PATTERN DETECTED:{Colors.ENDC}")
+                        print("    Outgoing UDP packets detected, no incoming on port 4500")
+                        print("    → LoadBalancer service is enabled - incoming traffic arrives on NodePort")
+                        print("    → Cannot reliably determine infrastructure blocking from tcpdump alone")
+                        print(f"\n  {Colors.WARNING}Note:{Colors.ENDC} Old tcpdump format - recommend re-collecting with enhanced version")
+
+                        if has_icmp_capture:
+                            print(f"\n  {Colors.BOLD}Analysis:{Colors.ENDC}")
+                            print("    Capture filter includes ICMP - check if health check pings arrive")
+                        else:
+                            print(f"\n  {Colors.BOLD}Analysis:{Colors.ENDC}")
+                            print("    Old capture filter (no ICMP) - cannot determine if traffic arrives")
+
+                        # Check firewall test results as fallback
+                        firewall_results = self.check_firewall_test_results()
+                        if firewall_results:
+                            print(f"\n  {Colors.BOLD}Firewall Test Results:{Colors.ENDC}")
+                            if firewall_results.get('passed'):
+                                print(f"    {Colors.OKGREEN}✓{Colors.ENDC} Firewall inter-cluster test PASSED")
+                                print("    → Infrastructure is NOT blocking UDP traffic")
+                                self.findings.append("Infrastructure allows UDP traffic (firewall test passed)")
+                            else:
+                                print(f"    {Colors.FAIL}✗{Colors.ENDC} Firewall inter-cluster test FAILED")
+                                print("    → Appears to be infrastructure blocking UDP traffic")
+                                self.issues.append(f"Infrastructure appears to be blocking {protocol_info['description']}")
+                        else:
+                            print(f"\n  {Colors.WARNING}Note:{Colors.ENDC} No firewall test results available")
+
+                        self.recommendations.append("Re-collect diagnostics to get enhanced NodePort analysis")
                 else:
                     # Not using LoadBalancer or using ESP - original logic applies
                     self.issues.append(f"CRITICAL: Both clusters sending tunnel packets but neither receiving → Appears to be infrastructure blocking {protocol_info['description']} in both directions")
@@ -1446,6 +1512,22 @@ class SubmarinerAnalyzer:
         if match:
             return int(match.group(1))
         return 0
+
+    def extract_nodeport_packet_count(self, analysis_content):
+        """Extract NodePort packet count from tcpdump analysis (LoadBalancer deployments)"""
+        if not analysis_content:
+            return 0
+        match = re.search(r'NodePort packets.*?:\s+(\d+)', analysis_content)
+        if match:
+            return int(match.group(1))
+        return 0
+
+    def check_ovn_forwarding_issue(self, analysis_content):
+        """Check if analysis indicates OVN forwarding issue (NodePort traffic but no tunnel traffic)"""
+        if not analysis_content:
+            return False
+        # Look for the specific warning message we generate
+        return 'OVN is NOT forwarding NodePort -> gateway pod ports' in analysis_content
 
     def analyze_pod_health(self):
         """Check pod status"""
