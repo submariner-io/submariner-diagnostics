@@ -6,3 +6,5 @@ Makefile.shipyard
 Dockerfile.*
 __pycache__/
 submariner-diagnostics-*/
+test-results-*/
+slack-bot/
