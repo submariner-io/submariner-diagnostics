@@ -1218,7 +1218,10 @@ ens192:           5 ICMP packets (unencrypted! dest=<remote-ip>)
 **Conclusion:**  
 → **This does not appear to be a Submariner bug** - Submariner configuration looks correct.  
 → **This appears to be an OVN-Kubernetes platform issue** - OVN may not be forwarding per policies.  
-→ Report to platform vendor (e.g., Red Hat for OpenShift) with evidence from Steps 1-3.
+→ Contact Submariner community with evidence from Steps 1-3:
+
+- [Slack](https://kubernetes.slack.com/archives/C010RJV694M)
+- [GitHub Issues](https://github.com/submariner-io/submariner/issues)
 
 ---
 

@@ -129,7 +129,7 @@ Submariner configures different components based on node role and OVN topology.
 
 **Files:**
 - `cluster*/gather/cluster*/gateway.yaml` - Gateway CR
-- `cluster*/gather/cluster*/routeagents_*.yaml` - RouteAgent per node
+- `cluster*/routeagents.yaml` - RouteAgent CRs (all nodes)
 
 **Find active gateway:**
 ```yaml
@@ -235,7 +235,7 @@ spec:
 
 ### If ALL Checks Pass
 
-**Configuration is correct** - Submariner configured OVN-K as expected.
+**Configuration appears correct** - Submariner appears to have configured OVN-K as expected.
 
 **Next steps:**
 1. Check OVN-K pinger tcpdump to identify failed segment
