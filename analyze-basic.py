@@ -2545,7 +2545,7 @@ class SubmarinerAnalyzer:
                     output.append("🔍 **ROOT CAUSE ANALYSIS:**")
                     output.append("✗ **TUNNEL NOT CONNECTED (both clusters)**")
                     output.append(f"• Cluster1 → Cluster2: {status1.upper()}")
-                    output.append(f"• Cluster2 → Cluster2: {status2.upper()}")
+                    output.append(f"• Cluster2 → Cluster1: {status2.upper()}")
                     output.append("")
                     output.append("**Likely cause:** Infrastructure/firewall blocking tunnel traffic")
                     output.append("")

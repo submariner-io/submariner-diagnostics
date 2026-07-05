@@ -85,6 +85,7 @@ Segment 2 (Inter-cluster): Local-GW → Remote-GW
 **Early Exit:**
 - If Gateway=connected AND RouteAgent=connected → Datapath is healthy, stop investigation
 - If Gateway=connected AND RouteAgent=error → Focus ONLY on local routing (Segment 1)
+- If Gateway=error AND RouteAgent=connected → Investigate why GW health check fails despite full path working
 - If Gateway=error AND RouteAgent=error → Focus on inter-cluster tunnel (Segment 2)
 
 **For OVN-K CNI:** When local routing issue detected (Gateway connected + RouteAgent error):

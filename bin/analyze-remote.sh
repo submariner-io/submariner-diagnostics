@@ -9,8 +9,9 @@
 
 set -euo pipefail
 
+# TODO: Pin to release tag (e.g., v0.23.0) after this PR is merged
 ANALYZER_URL="https://raw.githubusercontent.com/submariner-io/submariner-diagnostics/devel/analyze-basic.py"
-TMP_ANALYZER="/tmp/submariner-analyze-$$.py"
+TMP_ANALYZER="$(mktemp -t submariner-analyze.XXXXXX.py)"
 
 # Cleanup on exit
 trap 'rm -f "$TMP_ANALYZER"' EXIT
@@ -28,8 +29,8 @@ if ! python3 -c "import yaml" 2>/dev/null; then
 fi
 
 echo "📥 Downloading analyzer..."
-if ! curl -sL "$ANALYZER_URL" -o "$TMP_ANALYZER" 2>/dev/null; then
-    echo "❌ Failed to download analyzer"
+if ! curl -sfL --max-time 30 "$ANALYZER_URL" -o "$TMP_ANALYZER" 2>/dev/null; then
+    echo "❌ Failed to download analyzer (timeout or network error)"
     exit 1
 fi
 
