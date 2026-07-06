@@ -22,11 +22,13 @@ Segment 2 (Inter-cluster): Local-GW → Remote-GW
 | ---------- | ------------- | ---------------------------------------- |
 | connected  | connected     | Datapath healthy - STOP HERE             |
 | connected  | error         | Segment 1: Local routing (this guide)    |
+| error      | connected     | Investigate GW health check issue        |
 | error      | error         | Segment 2: Tunnel (tunnel-analysis.md)   |
 
 **Early Exit:**
 - If Gateway=connected AND RouteAgent=connected → Skip OVN verification entirely
-- If Gateway=error → Fix tunnel first, then come back to this
+- If Gateway=error AND RouteAgent=error → Fix tunnel first (Segment 2), then come back to this
+- If Gateway=error AND RouteAgent=connected → Unusual case, investigate why GW health check fails despite full path working
 
 ## What Submariner Configures for OVN-K
 

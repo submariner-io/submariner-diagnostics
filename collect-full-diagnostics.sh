@@ -796,7 +796,8 @@ collect_ovnk_table150_all_nodes() {
 }
 
 # Function to collect nftables rules from all nodes
-# Submariner 0.22+ uses nftables by default for globalnet and other packet filtering
+# Note: Submariner 0.22+ uses nftables by default, but we collect from all versions
+# If nftables is not available, collection will fail gracefully
 collect_nftables_all_nodes() {
     local cluster_name="$1"
     local kubeconfig="$2"
@@ -1689,9 +1690,9 @@ else
     echo "No OVN-K CNI detected - skipping table 150 collection"
 fi
 
-# nftables collection (Submariner 0.22+ uses nftables by default)
+# nftables collection (collects from all Submariner versions)
 echo ""
-echo "=== Collecting nftables rules (Submariner 0.22+) ==="
+echo "=== Collecting nftables rules ==="
 collect_nftables_all_nodes "cluster1" "${KUBECONFIG1}" "${CLUSTER1_CONTEXT}" "${OUTPUT_DIR}/cluster1/gather/cluster1"
 if [[ -n "${KUBECONFIG2}" ]]; then
     collect_nftables_all_nodes "cluster2" "${KUBECONFIG2}" "${CLUSTER2_CONTEXT}" "${OUTPUT_DIR}/cluster2/gather/cluster2"

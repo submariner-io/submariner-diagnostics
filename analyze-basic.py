@@ -13,6 +13,7 @@ import ipaddress
 import subprocess
 import json
 import argparse
+import glob
 from datetime import datetime
 
 class Colors:
@@ -2977,6 +2978,285 @@ class SubmarinerAnalyzer:
                 for issue in ovn_issues[:3]:  # Show first 3
                     self._print(f"    - {issue}")
 
+    def analyze_nftables(self):
+        """
+        Analyze nftables rules for Submariner datapath issues.
+
+        CRITICAL: Only runs when datapath is broken:
+        - Gateway CR status = error, OR
+        - RouteAgent CR status = error, OR
+        - Connectivity verification failed
+
+        Checks:
+        1. Globalnet SNAT rules (Submariner 0.22+)
+        2. OVN-K mgmtport SNAT exemptions
+        3. MSS clamping packet counters
+        """
+        # Check if datapath is broken
+        datapath_broken = False
+
+        # Check tunnel status (any non-connected status is considered broken)
+        for cluster in ['cluster1', 'cluster2']:
+            gw_status = self.tunnel_status.get(cluster, {}).get('status', 'unknown')
+            if gw_status != 'connected':
+                datapath_broken = True
+                break
+
+        # Check RouteAgent status
+        if hasattr(self, 'routeagent_data'):
+            for cluster in ['cluster1', 'cluster2']:
+                if cluster in self.routeagent_data:
+                    if self.routeagent_data[cluster].get('errors', 0) > 0:
+                        datapath_broken = True
+                        break
+
+        # Check connectivity verification failures
+        if hasattr(self, 'faulty_states'):
+            for fault in self.faulty_states:
+                if 'connectivity verification failed' in fault.lower():
+                    datapath_broken = True
+                    break
+
+        # Early exit if datapath is healthy
+        if not datapath_broken:
+            return
+
+        self._print(f"\n{Colors.BOLD}=== Analyzing nftables Rules (Submariner 0.22+) ==={Colors.ENDC}")
+        self._print(f"  {Colors.OKBLUE}ℹ{Colors.ENDC} Checking nftables because datapath issues detected")
+
+        cluster_subdirs = self.get_cluster_subdirs()
+        if not cluster_subdirs:
+            return
+
+        for cluster in ['cluster1', 'cluster2']:
+            actual_cluster_name = cluster_subdirs.get(cluster)
+            if not actual_cluster_name:
+                continue
+
+            gather_dir = os.path.join(self.diagnostics_dir, cluster, "gather", actual_cluster_name)
+            if not os.path.exists(gather_dir):
+                continue
+
+            self._print(f"\n  Checking {cluster}:")
+
+            # Find nftables files
+            nftables_files = glob.glob(os.path.join(gather_dir, "*_nftables.log"))
+            if not nftables_files:
+                self._print(f"    {Colors.WARNING}⚠{Colors.ENDC} No nftables files found (pre-0.22 or collection failed)")
+                continue
+
+            # Check if globalnet is enabled
+            globalnet_enabled = self.detect_globalnet(cluster)
+
+            # Analyze gateway node nftables
+            # Get active gateway node from Gateway CR
+            gateway_node = None
+            gateway_cr = self.find_and_read_gateway_cr(cluster)
+            if gateway_cr and 'status' in gateway_cr:
+                gateways = gateway_cr['status'].get('gateways', [])
+                for gw in gateways:
+                    if gw.get('haStatus') == 'active':
+                        gateway_node = gw.get('localEndpoint', {}).get('hostname')
+                        break
+
+            if gateway_node:
+                # Validate gateway_node to prevent path traversal
+                # Only allow alphanumeric, hyphens, underscores, and dots
+                if not re.match(r'^[a-zA-Z0-9._-]+$', gateway_node):
+                    self._print(f"    {Colors.WARNING}⚠{Colors.ENDC} Invalid gateway node name: {gateway_node}")
+                else:
+                    self._print(f"    Analyzing gateway node: {gateway_node}")
+                    gateway_nft_file = os.path.join(gather_dir, f"{gateway_node}_nftables.log")
+
+                    # Verify the resolved path is within gather_dir (prevent traversal)
+                    real_gather_dir = os.path.realpath(gather_dir)
+                    real_nft_file = os.path.realpath(gateway_nft_file)
+                    if not real_nft_file.startswith(real_gather_dir):
+                        self._print(f"    {Colors.WARNING}⚠{Colors.ENDC} Path traversal attempt detected")
+                    elif os.path.exists(gateway_nft_file):
+                        self._analyze_nftables_file(gateway_nft_file, cluster, gateway_node,
+                                                    globalnet_enabled, is_gateway=True)
+
+            # Check OVN-K SNAT exemptions on all nodes if OVN-K
+            cni = self.detect_cni(cluster)
+            if "OVN" in cni:
+                self._check_ovn_snat_exemptions(gather_dir, cluster)
+
+    def _analyze_nftables_file(self, nft_file, cluster, node_name, globalnet_enabled, is_gateway=False):
+        """Parse and analyze a single nftables file."""
+        try:
+            with open(nft_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except (IOError, OSError, UnicodeDecodeError) as e:
+            self._print(f"    {Colors.WARNING}⚠{Colors.ENDC} Failed to read nftables file from {node_name}: {e}")
+            return
+
+        node_label = "gateway" if is_gateway else "worker"
+
+        # Check 1: Globalnet SNAT rules (only on gateway, only if globalnet enabled)
+        if is_gateway and globalnet_enabled:
+            self._check_globalnet_snat(content, cluster, node_name)
+
+        # Check 2: MSS clamping
+        if is_gateway:
+            self._check_mss_clamping(content, cluster, node_name)
+
+    def _check_globalnet_snat(self, nft_content, cluster, node_name):
+        """Check for globalnet SNAT rules in SUBMARINER-POSTROUTING chain."""
+        # Find SUBMARINER-POSTROUTING chain
+        postrouting_match = re.search(r'chain SUBMARINER-POSTROUTING \{([^}]+)\}', nft_content, re.DOTALL)
+        if not postrouting_match:
+            self._print(f"    {Colors.WARNING}⚠{Colors.ENDC} SUBMARINER-POSTROUTING chain not found")
+            return
+
+        chain_content = postrouting_match.group(1)
+
+        # Look for SNAT rules (format: "snat to X.X.X.X" or "snat ip to X.X.X.X")
+        snat_rules = re.findall(r'snat (?:ip )?to (\S+)', chain_content)
+
+        if not snat_rules:
+            self._print(f"    {Colors.WARNING}⚠{Colors.ENDC} No globalnet SNAT rules found (globalnet enabled but no SNAT)")
+            self.issues.append(f"{cluster}: Globalnet enabled but no SNAT rules in nftables")
+            return
+
+        # Check for 0.0.0.0 SNAT (the bug we're trying to catch!)
+        for snat_ip in snat_rules:
+            if snat_ip == "0.0.0.0":
+                self._print(f"    {Colors.FAIL}✗{Colors.ENDC} Globalnet SNAT to 0.0.0.0 detected!")
+                self.issues.append(f"{cluster}: Globalnet SNAT IP is 0.0.0.0 (source IP allocation failed)")
+            else:
+                self._print(f"    {Colors.OKGREEN}✓{Colors.ENDC} Globalnet SNAT to {snat_ip}")
+
+        # Check packet counters
+        counter_match = re.search(r'snat.*counter packets (\d+) bytes', chain_content)
+        if counter_match:
+            packets = int(counter_match.group(1))
+            if packets == 0:
+                self._print(f"    {Colors.WARNING}⚠{Colors.ENDC} Globalnet SNAT rule exists but 0 packets matched")
+                self._print(f"      → Likely: Traffic not reaching nftables (check IP rules)")
+
+    def _check_mss_clamping(self, nft_content, cluster, node_name):
+        """Check MSS clamping packet counters."""
+        # Find SUBMARINER-POSTROUTING-MSS chain
+        mss_match = re.search(r'chain SUBMARINER-POSTROUTING-MSS \{([^}]+)\}', nft_content, re.DOTALL)
+        if not mss_match:
+            return  # MSS clamping chain not found (optional feature)
+
+        chain_content = mss_match.group(1)
+
+        # Extract packet counters
+        counters = re.findall(r'counter packets (\d+) bytes', chain_content)
+        if counters:
+            total_packets = sum(int(c) for c in counters)
+            if total_packets > 0:
+                self._print(f"    {Colors.OKGREEN}✓{Colors.ENDC} MSS clamping active ({total_packets} SYN packets clamped)")
+
+    def _check_ovn_snat_exemptions(self, gather_dir, cluster):
+        """Check OVN-K mgmtport SNAT exemptions for Submariner CIDRs on all nodes."""
+        self._print(f"\n    {Colors.BOLD}OVN-K SNAT Exemption Check:{Colors.ENDC}")
+
+        # Get remote cluster CIDRs that should be exempted
+        remote_cidrs = self._get_remote_cidrs(cluster)
+        if not remote_cidrs:
+            self._print(f"      {Colors.WARNING}⚠{Colors.ENDC} No remote CIDRs found")
+            return
+
+        self._print(f"      Checking CIDRs: {', '.join(remote_cidrs)}")
+
+        # Find all nftables files (check all nodes, not just gateway)
+        nftables_files = glob.glob(os.path.join(gather_dir, "*_nftables.log"))
+        if not nftables_files:
+            self._print(f"      {Colors.WARNING}⚠{Colors.ENDC} No nftables files found")
+            return
+
+        nodes_checked = 0
+        node_issues = {}
+
+        for nft_file in nftables_files:
+            node_name = os.path.basename(nft_file).replace('_nftables.log', '')
+
+            try:
+                with open(nft_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except (IOError, OSError, UnicodeDecodeError):
+                continue
+
+            # Find mgmtport-no-snat-subnets-v4 set
+            snat_exempt_match = re.search(
+                r'set mgmtport-no-snat-subnets-v4 \{[^}]*elements = \{([^}]+)\}',
+                content, re.DOTALL
+            )
+
+            if not snat_exempt_match:
+                # OVN-K set not found - treat as missing configuration
+                node_issues[node_name] = ["mgmtport-no-snat-subnets-v4 set not found"]
+                self._print(f"      {Colors.WARNING}⚠{Colors.ENDC} {node_name}: mgmtport-no-snat-subnets-v4 set not found")
+                continue
+
+            nodes_checked += 1
+            exempt_content = snat_exempt_match.group(1)
+
+            # Check each remote CIDR on this node
+            missing_exemptions = []
+            for cidr in remote_cidrs:
+                if cidr not in exempt_content:
+                    missing_exemptions.append(cidr)
+
+            if missing_exemptions:
+                node_issues[node_name] = missing_exemptions
+                self._print(f"      {Colors.FAIL}✗{Colors.ENDC} {node_name}: Missing exemptions: {', '.join(missing_exemptions)}")
+
+        if nodes_checked == 0 and not node_issues:
+            self._print(f"      {Colors.WARNING}⚠{Colors.ENDC} No OVN-K SNAT configuration found")
+        elif not node_issues:
+            self._print(f"      {Colors.OKGREEN}✓{Colors.ENDC} All {nodes_checked} node(s) have correct SNAT exemptions")
+
+        if node_issues:
+            for node_name, missing in node_issues.items():
+                self.issues.append(
+                    f"{cluster}/{node_name}: Remote CIDRs not exempted from OVN mgmtport SNAT: {', '.join(missing)}"
+                )
+            self._print(f"      {Colors.FAIL}→{Colors.ENDC} OVN will SNAT Submariner traffic (breaks tunnel)")
+
+    def _get_remote_cidrs(self, cluster):
+        """Get remote cluster CIDRs (pod + service + globalnet if enabled)."""
+        # Use the same logic as check_ovn_routing() to get remote CIDRs
+        cluster_subdirs = self.get_cluster_subdirs()
+        if not cluster_subdirs or cluster not in cluster_subdirs:
+            return []
+
+        actual_cluster_name = cluster_subdirs[cluster]
+        gather_dir = os.path.join(self.diagnostics_dir, cluster, "gather", actual_cluster_name)
+
+        remote_cidrs = set()
+
+        # Get from GatewayRoute CRs (most reliable)
+        gateway_routes_pattern = os.path.join(gather_dir, "gatewayroutes_*.yaml")
+        gateway_routes_files = glob.glob(gateway_routes_pattern)
+        if gateway_routes_files:
+            for gr_file in gateway_routes_files:
+                # Convert absolute path to relative path for read_yaml
+                rel_path = os.path.relpath(gr_file, self.diagnostics_dir)
+                gateway_route = self.read_yaml(rel_path)
+                if gateway_route and 'spec' in gateway_route:
+                    remote_cidrs.update(gateway_route['spec'].get('remoteCIDRs', []))
+
+        # Fallback: Get from Gateway CR connections
+        if not remote_cidrs:
+            gateway_rel_path = os.path.join(cluster, "gather", actual_cluster_name, "gateway.yaml")
+            gateway_cr = self.read_yaml(gateway_rel_path)
+            if gateway_cr and 'status' in gateway_cr:
+                connections = gateway_cr['status'].get('connections', [])
+                for conn in connections:
+                    remote_cidrs.update(conn.get('endpoint', {}).get('subnets', []))
+
+        # Add globalnet CIDR if enabled
+        globalnet_cidr = self.get_remote_globalnet_cidr(cluster)
+        if globalnet_cidr:
+            remote_cidrs.add(globalnet_cidr)
+
+        return list(remote_cidrs)
+
     def check_ovn_local_gateway_mode_issue(self):
         """
         Check for known OVN-Kubernetes local gateway mode health check issue.
@@ -3644,6 +3924,9 @@ class SubmarinerAnalyzer:
                 self.check_ovn_local_gateway_mode_issue()
                 self.verify_ovnk_host_networking()
                 self.check_main_table_routes()
+
+            # NEW: Analyze nftables rules (only when datapath broken)
+            self.analyze_nftables()
 
             # Analyze tcpdump for tunnel issues
             if any('tunnel' in fault.lower() for fault in self.faulty_states):

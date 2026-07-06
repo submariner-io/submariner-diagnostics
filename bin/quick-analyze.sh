@@ -11,7 +11,7 @@ ANALYZER="${SCRIPT_DIR}/../analyze-basic.py"
 if [ "${1:-}" = "" ]; then
     # Auto-detect latest file in Downloads (BSD/macOS compatible)
     FILE=$(find ~/Downloads -maxdepth 1 -name "submariner-diagnostics-*.tar.gz" -type f 2>/dev/null | \
-           xargs ls -t 2>/dev/null | head -1)
+           xargs -r ls -t 2>/dev/null | head -1 || true)
 
     if [ -z "$FILE" ]; then
         echo "❌ No submariner-diagnostics-*.tar.gz found in ~/Downloads/"
