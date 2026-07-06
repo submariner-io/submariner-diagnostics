@@ -795,6 +795,58 @@ collect_ovnk_table150_all_nodes() {
     echo "    ✓ Collected table 150 from ${collected_count} node(s)"
 }
 
+# Function to collect nftables rules from all nodes
+# Submariner 0.22+ uses nftables by default for globalnet and other packet filtering
+collect_nftables_all_nodes() {
+    local cluster_name="$1"
+    local kubeconfig="$2"
+    local context="$3"
+    local gather_dir="$4"
+
+    echo "  Collecting nftables rules from all nodes (${cluster_name})..."
+
+    # Get all RouteAgent pods
+    local routeagent_pods=$(kubectl --context "$context" get pods -n submariner-operator \
+        -l app=submariner-routeagent -o name --kubeconfig="${kubeconfig}" 2>/dev/null)
+
+    if [[ -z "$routeagent_pods" ]]; then
+        echo "    ⚠ No RouteAgent pods found"
+        return
+    fi
+
+    local collected_count=0
+
+    # For each RouteAgent pod
+    while IFS= read -r pod; do
+        local pod_name=$(basename "$pod")
+
+        # Get node name
+        local node_name=$(kubectl --context "$context" get "$pod" -n submariner-operator \
+            -o jsonpath='{.spec.nodeName}' --kubeconfig="${kubeconfig}" 2>/dev/null)
+
+        if [[ -z "$node_name" ]]; then
+            continue
+        fi
+
+        # Collect nftables ruleset
+        local output_file="${gather_dir}/${node_name}_nftables.log"
+
+        {
+            echo "nft list ruleset"
+            kubectl --context "$context" exec -n submariner-operator "$pod" --kubeconfig="${kubeconfig}" -- \
+                nft list ruleset 2>&1
+        } > "$output_file" 2>&1
+
+        if [[ $? -eq 0 ]]; then
+            ((collected_count++))
+        else
+            echo "    ⚠ ${node_name}: Failed to collect (nft might not be available)"
+        fi
+    done <<< "$routeagent_pods"
+
+    echo "    ✓ Collected nftables from ${collected_count} node(s)"
+}
+
 # Function to collect firewall inter-cluster diagnostics
 collect_firewall_inter_cluster() {
     local cluster1_name="$1"
@@ -1635,6 +1687,14 @@ if [[ "$CNI_CLUSTER1" == "OVNKubernetes" ]] || [[ "$CNI_CLUSTER2" == "OVNKuberne
     fi
 else
     echo "No OVN-K CNI detected - skipping table 150 collection"
+fi
+
+# nftables collection (Submariner 0.22+ uses nftables by default)
+echo ""
+echo "=== Collecting nftables rules (Submariner 0.22+) ==="
+collect_nftables_all_nodes "cluster1" "${KUBECONFIG1}" "${CLUSTER1_CONTEXT}" "${OUTPUT_DIR}/cluster1/gather/cluster1"
+if [[ -n "${KUBECONFIG2}" ]]; then
+    collect_nftables_all_nodes "cluster2" "${KUBECONFIG2}" "${CLUSTER2_CONTEXT}" "${OUTPUT_DIR}/cluster2/gather/cluster2"
 fi
 
 # Firewall diagnostics collection
