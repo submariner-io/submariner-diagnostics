@@ -34,10 +34,7 @@ SANITIZE_MODE=false
 
 # Individual command timeouts (seconds)
 readonly TIMEOUT_CLUSTER_INFO=30
-readonly TIMEOUT_SUBCTL_GATHER=600
-readonly TIMEOUT_SUBCTL_SHOW=60
 readonly TIMEOUT_SUBCTL_DIAGNOSE=300
-readonly TIMEOUT_TCPDUMP_CAPTURE=120
 readonly TIMEOUT_KUBECTL_CMD=30
 
 # Progress tracking global variables
@@ -648,7 +645,7 @@ collect_tcpdump_from_cluster() {
     local kubeconfig="$2"
     local context="$3"
     local tcpdump_dir="$4"
-    local capture_duration="${5:-30}"
+    local capture_duration="${5:-60}"  # Increased from 30s to 60s for better health check capture
 
     echo "=== Collecting tcpdump from ${cluster_name} gateway nodes ==="
 
@@ -1835,10 +1832,10 @@ fi
 if [ -n "$SUBMARINER_VER_C1" ] && [ -n "$SUBMARINER_VER_C2" ] && [ "$SUBMARINER_VER_C1" != "$SUBMARINER_VER_C2" ]; then
     echo "  ⚠ Different Submariner versions between clusters (NOT recommended)" >> "${OUTPUT_DIR}/manifest.txt"
 fi
-echo "" >> "${OUTPUT_DIR}/manifest.txt"
 
 # Collect from Cluster 1
 {
+echo ""
 echo "Cluster 1:"
 echo "  Context: ${CLUSTER1_CONTEXT}"
 echo "  Kubeconfig: ${KUBECONFIG1##*/}"
@@ -1912,13 +1909,15 @@ PHASE2_ELAPSED=$(($(date +%s) - PHASE2_START))
 PHASE2_ELAPSED_FMT=$(format_duration $PHASE2_ELAPSED)
 
 # Merge collection logs back into main collection.log
-echo "" >> "${COLLECTION_LOG}"
-echo "=== Cluster1 Collection Output ===" >> "${COLLECTION_LOG}"
-cat "${OUTPUT_DIR}/cluster1-collection.log" >> "${COLLECTION_LOG}"
-echo "" >> "${COLLECTION_LOG}"
-echo "=== Cluster2 Collection Output ===" >> "${COLLECTION_LOG}"
-cat "${OUTPUT_DIR}/cluster2-collection.log" >> "${COLLECTION_LOG}"
-echo "" >> "${COLLECTION_LOG}"
+{
+    echo ""
+    echo "=== Cluster1 Collection Output ==="
+    cat "${OUTPUT_DIR}/cluster1-collection.log"
+    echo ""
+    echo "=== Cluster2 Collection Output ==="
+    cat "${OUTPUT_DIR}/cluster2-collection.log"
+    echo ""
+} >> "${COLLECTION_LOG}"
 
 # Report completion
 echo ""
