@@ -580,8 +580,11 @@ collect_cluster_diagnostics() {
 
     # subctl gather (most comprehensive)
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Running subctl gather for ${cluster_name}..."
+    set +e
     timeout 600 subctl gather --kubeconfig "${kubeconfig}" --context "${context}" --dir "${cluster_dir}/gather" 2>&1 | tee "${cluster_dir}/gather.log"
-    if [ $? -eq 124 ]; then
+    GATHER_EXIT_CODE="${PIPESTATUS[0]}"
+    set -e
+    if [ "$GATHER_EXIT_CODE" -eq 124 ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: subctl gather timed out after 10 minutes on ${cluster_name}" | tee -a "${cluster_dir}/gather.log"
     else
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed subctl gather for ${cluster_name}"
@@ -601,22 +604,31 @@ collect_cluster_diagnostics() {
 
     # subctl show (connection status)
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Running subctl show for ${cluster_name}..."
+    set +e
     timeout 60 subctl show all --kubeconfig "${kubeconfig}" --context "${context}" > "${cluster_dir}/subctl-show-all.txt" 2>&1
-    if [ $? -eq 124 ]; then
+    SHOW_EXIT_CODE=$?
+    set -e
+    if [ "$SHOW_EXIT_CODE" -eq 124 ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: subctl show timed out after 60 seconds" | tee -a "${cluster_dir}/subctl-show-all.txt"
     fi
 
     # subctl diagnose (health checks)
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Running subctl diagnose for ${cluster_name}..."
+    set +e
     timeout $TIMEOUT_SUBCTL_DIAGNOSE subctl diagnose all --kubeconfig "${kubeconfig}" --context "${context}" > "${cluster_dir}/subctl-diagnose-all.txt" 2>&1
-    if [ $? -eq 124 ]; then
+    DIAGNOSE_EXIT_CODE=$?
+    set -e
+    if [ "$DIAGNOSE_EXIT_CODE" -eq 124 ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: subctl diagnose timed out after 5 minutes" | tee -a "${cluster_dir}/subctl-diagnose-all.txt"
     fi
 
     # subctl show versions (version information)
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Running subctl show versions for ${cluster_name}..."
+    set +e
     timeout 30 subctl show versions --kubeconfig "${kubeconfig}" --context "${context}" > "${cluster_dir}/subctl-show-versions.txt" 2>&1
-    if [ $? -eq 124 ]; then
+    VERSIONS_EXIT_CODE=$?
+    set -e
+    if [ "$VERSIONS_EXIT_CODE" -eq 124 ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: subctl show versions timed out after 30 seconds" | tee -a "${cluster_dir}/subctl-show-versions.txt"
     fi
 
@@ -1885,7 +1897,7 @@ echo ""
 HEARTBEAT_COUNT=0
 while kill -0 $CLUSTER1_PID 2>/dev/null || kill -0 $CLUSTER2_PID 2>/dev/null; do
     sleep 30
-    ((HEARTBEAT_COUNT++))
+    HEARTBEAT_COUNT=$((HEARTBEAT_COUNT + 1))
     ELAPSED=$(($(date +%s) - PHASE2_START))
     ELAPSED_FMT=$(format_duration $ELAPSED)
 

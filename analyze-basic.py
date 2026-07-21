@@ -3035,22 +3035,22 @@ class SubmarinerAnalyzer:
                 except OSError:
                     continue
 
-                    policies_checked = True
-                    node_name = os.path.basename(policy_file).replace("_ovn_lr_ovn_cluster_router_policies.log", "")
-                    # Check for Submariner router policies (priority 20000)
-                    for cidr in remote_cidrs:
-                        policy_match = f"ip4.dst == {cidr}"
-                        # Check that both the CIDR and exact priority 20000 appear on the same line
-                        found = False
-                        for line in policies_content.splitlines():
-                            if policy_match in line and re.search(r'\b20000\b', line):
-                                found = True
-                                break
-                        if found:
-                            self._print(f"  {Colors.OKGREEN}✓{Colors.ENDC} {cluster}/{node_name}: OVN router policy found for {cidr}")
-                        else:
-                            self._print(f"  {Colors.FAIL}✗{Colors.ENDC} {cluster}/{node_name}: OVN router policy MISSING for {cidr}")
-                            self.issues.append(f"{cluster}/{node_name}: OVN router policy missing for {cidr}")
+                policies_checked = True
+                node_name = os.path.basename(policy_file).replace("_ovn_lr_ovn_cluster_router_policies.log", "")
+                # Check for Submariner router policies (priority 20000)
+                for cidr in remote_cidrs:
+                    policy_match = f"ip4.dst == {cidr}"
+                    # Check that both the CIDR and exact priority 20000 appear on the same line
+                    found = False
+                    for line in policies_content.splitlines():
+                        if policy_match in line and re.search(r'\b20000\b', line):
+                            found = True
+                            break
+                    if found:
+                        self._print(f"  {Colors.OKGREEN}✓{Colors.ENDC} {cluster}/{node_name}: OVN router policy found for {cidr}")
+                    else:
+                        self._print(f"  {Colors.FAIL}✗{Colors.ENDC} {cluster}/{node_name}: OVN router policy MISSING for {cidr}")
+                        self.issues.append(f"{cluster}/{node_name}: OVN router policy missing for {cidr}")
 
             if not policies_checked:
                 self._print(f"  {Colors.WARNING}⚠{Colors.ENDC} {cluster}: no OVN router policy logs found")
@@ -4091,51 +4091,51 @@ class SubmarinerAnalyzer:
 
             # cluster2 → cluster1 direction
             self._print("\n      Direction: cluster2 → cluster1")
-        self._print(f"        {Colors.BOLD}cluster2 egress:{Colors.ENDC}")
-        if c2_snat > 0:
-            self._print(f"          ✓ SNAT: {c2_snat:,} packets (GlobalNet egress traffic)")
-        else:
-            self._print("          ✗ SNAT: 0 packets (not sending)")
+            self._print(f"        {Colors.BOLD}cluster2 egress:{Colors.ENDC}")
+            if c2_snat > 0:
+                self._print(f"          ✓ SNAT: {c2_snat:,} packets (GlobalNet egress traffic)")
+            else:
+                self._print("          ✗ SNAT: 0 packets (not sending)")
 
-        if c2_tcpdump > 0:
-            self._print(f"          ✓ Tunnel egress: {c2_tcpdump} packets captured")
-        else:
-            self._print("          ✗ Tunnel egress: 0 packets")
+            if c2_tcpdump > 0:
+                self._print(f"          ✓ Tunnel egress: {c2_tcpdump} packets captured")
+            else:
+                self._print("          ✗ Tunnel egress: 0 packets")
 
-        self._print(f"        {Colors.BOLD}cluster1 ingress:{Colors.ENDC}")
-        if c1_tcpdump > 0:
-            self._print(f"          ✓ Tunnel ingress: {c1_tcpdump} packets captured")
-        else:
-            self._print("          ✗ Tunnel ingress: 0 packets")
+            self._print(f"        {Colors.BOLD}cluster1 ingress:{Colors.ENDC}")
+            if c1_tcpdump > 0:
+                self._print(f"          ✓ Tunnel ingress: {c1_tcpdump} packets captured")
+            else:
+                self._print("          ✗ Tunnel ingress: 0 packets")
 
-        if c1_dnat > 0:
-            self._print(f"          ✓ DNAT: {c1_dnat:,} packets (GlobalNet ingress traffic)")
-        else:
-            self._print("          ✗ DNAT: 0 packets (not reaching nftables DNAT)")
+            if c1_dnat > 0:
+                self._print(f"          ✓ DNAT: {c1_dnat:,} packets (GlobalNet ingress traffic)")
+            else:
+                self._print("          ✗ DNAT: 0 packets (not reaching nftables DNAT)")
 
-        # cluster1 → cluster2 direction
-        self._print("\n      Direction: cluster1 → cluster2")
-        self._print(f"        {Colors.BOLD}cluster1 egress:{Colors.ENDC}")
-        if c1_snat > 0:
-            self._print(f"          ✓ SNAT: {c1_snat:,} packets (GlobalNet egress traffic)")
-        else:
-            self._print("          ✗ SNAT: 0 packets (not sending)")
+            # cluster1 → cluster2 direction
+            self._print("\n      Direction: cluster1 → cluster2")
+            self._print(f"        {Colors.BOLD}cluster1 egress:{Colors.ENDC}")
+            if c1_snat > 0:
+                self._print(f"          ✓ SNAT: {c1_snat:,} packets (GlobalNet egress traffic)")
+            else:
+                self._print("          ✗ SNAT: 0 packets (not sending)")
 
-        if c1_tcpdump > 0:
-            self._print(f"          ✓ Tunnel egress: {c1_tcpdump} packets captured")
-        else:
-            self._print("          ✗ Tunnel egress: 0 packets")
+            if c1_tcpdump > 0:
+                self._print(f"          ✓ Tunnel egress: {c1_tcpdump} packets captured")
+            else:
+                self._print("          ✗ Tunnel egress: 0 packets")
 
-        self._print(f"        {Colors.BOLD}cluster2 ingress:{Colors.ENDC}")
-        if c2_tcpdump > 0:
-            self._print(f"          ✓ Tunnel ingress: {c2_tcpdump} packets captured")
-        else:
-            self._print("          ✗ Tunnel ingress: 0 packets")
+            self._print(f"        {Colors.BOLD}cluster2 ingress:{Colors.ENDC}")
+            if c2_tcpdump > 0:
+                self._print(f"          ✓ Tunnel ingress: {c2_tcpdump} packets captured")
+            else:
+                self._print("          ✗ Tunnel ingress: 0 packets")
 
-        if c2_dnat > 0:
-            self._print(f"          ✓ DNAT: {c2_dnat:,} packets (GlobalNet ingress traffic)")
-        else:
-            self._print("          ✗ DNAT: 0 packets (not reaching nftables DNAT)")
+            if c2_dnat > 0:
+                self._print(f"          ✓ DNAT: {c2_dnat:,} packets (GlobalNet ingress traffic)")
+            else:
+                self._print("          ✗ DNAT: 0 packets (not reaching nftables DNAT)")
 
         # Diagnose based on packet flow pattern
         self._print(f"\n      {Colors.BOLD}Diagnosis:{Colors.ENDC}")
