@@ -121,13 +121,13 @@ Stage 3: DNAT (nftables ingress) - Health checks arriving at remote gateway
 
 **Diagnosis Patterns:**
 - **SNAT > 0, Tunnel > 0, DNAT > 0**: Healthy packet flow
-- **SNAT > 0, Tunnel > 0, DNAT = 0**: Tunnel works but post-decapsulation routing broken
-  - Diagnosis: "Packets reach gateway but not DNAT rule"
-  - Root cause: Post-decapsulation routing issue (packets not routed to ovn-k8s-mp0)
-- **SNAT > 0, Tunnel = 0, DNAT = 0**: Packets not leaving source gateway
-  - Root cause: Infrastructure/firewall blocking
+- **SNAT > 0, Tunnel > 0, DNAT = 0**: **Evidence suggests** post-decapsulation routing issue
+  - Observation: "Packets appear to reach gateway but not DNAT rule"
+  - Possible cause: Post-decapsulation routing issue (packets may not be routed to ovn-k8s-mp0)
+- **SNAT > 0, Tunnel = 0, DNAT = 0**: **Evidence suggests** packets not leaving source gateway
+  - Possible cause: Infrastructure/firewall blocking
 - **SNAT = 0**: Source gateway not sending
-  - Root cause: Local datapath issue (check IP rules, routing table 150)
+  - Possible cause: Local datapath issue (check IP rules, routing table 150)
 
 **VXLAN-Specific Analysis:**
 - For cable driver = vxlan, analyze pcap packet contents
@@ -135,10 +135,11 @@ Stage 3: DNAT (nftables ingress) - Health checks arriving at remote gateway
 - Verify VXLAN encapsulation is working
 
 **Important:**
-- Don't conclude from single data point - correlate all three stages
-- Use cautious language: "it appears that", "seems like"
-- If Submariner config correct but broken → infrastructure issue
-- Recommend Submariner community contact with diagnostic tarball
+- Don't conclude from single data point - correlate all three stages with additional evidence
+- Always use cautious language: "it appears that", "seems like", "evidence suggests", "most likely"
+- Present packet patterns as evidence requiring correlation with routing state and other diagnostics
+- If Submariner config appears correct but broken → possible infrastructure issue (verify with additional checks)
+- Recommend Submariner community contact with diagnostic tarball for further investigation
 
 ## Output Format
 

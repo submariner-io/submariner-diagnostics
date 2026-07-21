@@ -60,6 +60,8 @@ table inet submariner {
 grep -E "chain SM-GN-EGRESS-" <gateway-node>_nftables.log
 ```
 
+**Steps:**
+
 1. **Look for SNAT rules** in `SM-GN-EGRESS-CLUSTER` chain:
 
 ```nftables
@@ -294,11 +296,11 @@ vxlan
 
 ### Recommendations by Cable Driver
 
-|Cable Driver|Recommend|
-|------------|--------|
-|`libreswan`|Check IPsec counters in `ipsec-trafficstatus.log`|
-|`vxlan`|Check VXLAN packet encapsulation, ARP resolution|
-|`wireguard`|Check WireGuard tunnel status|
+| Cable Driver | Recommend |
+| ------------ | --------- |
+| `libreswan` | Check IPsec counters in `ipsec-trafficstatus.log` |
+| `vxlan` | Check VXLAN packet encapsulation, ARP resolution |
+| `wireguard` | Check WireGuard tunnel status |
 
 **Never** recommend IPsec checks for VXLAN or vice versa.
 
@@ -431,7 +433,7 @@ cluster2:
 
 ## References
 
-- **Submariner nftables migration**: <https://github.com/submariner-io/submariner/pull/2850>
+- **Submariner nftables migration**: [PR #2850](https://github.com/submariner-io/submariner/pull/2850)
 - **GlobalNet architecture**: See `datapath-architecture.md`
 - **OVN-K SNAT exemptions**: See `ovn-offline-verification.md`
 
@@ -443,7 +445,7 @@ When available, analyze pcap files to understand tunnel traffic patterns.
 
 ### VXLAN Cable Driver
 
-For VXLAN deployments, analyze UDP port 4500 traffic:
+For VXLAN deployments, analyze UDP port 4800 traffic (default VXLAN port, or check endpoint configuration for actual port):
 
 **ICMP Packet Types to Check**:
 - **Echo Request (Egress)**: Health checks being sent to remote cluster
@@ -471,15 +473,15 @@ cluster2:
 
 **CRITICAL: Analyze ICMP TYPES, not just packet counts**
 
-**Diagnosis from ICMP Patterns**:
+**Evidence-Based Diagnosis from ICMP Patterns**:
 - **Both clusters: Egress Echo Request**: Healthy - both sending health checks ✓
-- **One cluster: Egress Unreachable instead of Echo Request**: Local routing issue ✗
-  - Cluster cannot route to remote GlobalNet health check IP
-  - This is NOT a tunnel failure - it's a routing configuration problem
-  - Root cause: Missing routes or routing table misconfiguration
+- **One cluster: Egress Unreachable instead of Echo Request**: **Evidence suggests** local routing issue ✗
+  - Observation: Cluster appears unable to route to remote GlobalNet health check IP
+  - This pattern typically indicates routing configuration, NOT tunnel failure
+  - Possible cause: Missing routes or routing table misconfiguration
   - **VXLAN-specific**: Check ARP resolution (see below)
-- **Egress Request + No Ingress Reply**: Remote not responding (check remote cluster)
-- **No Egress Request**: Local not sending (check local datapath)
+- **Egress Request + No Ingress Reply**: **Evidence suggests** remote not responding (correlate with remote cluster data)
+- **No Egress Request**: **Evidence suggests** local not sending (check local datapath)
 
 **VXLAN-Specific: ARP Resolution Check**
 
@@ -496,7 +498,7 @@ cluster2:
 **Diagnosis**: Gateway cannot resolve remote gateway MAC address
 - Check VXLAN tunnel interface is UP
 - Verify remote gateway reachability at L2
-- Check VXLAN network connectivity (UDP port 4500)
+- Check VXLAN network connectivity (UDP port 4800 or as configured in deployment)
 
 If you see **ARP packets present**:
 ```
@@ -506,18 +508,18 @@ cluster1:
   ✓ ARP packets: 5
 ```
 
-**Diagnosis**: L2 connectivity working, ARP resolution successful
+**Observation**: L2 connectivity appears working, ARP resolution successful
 
-**DON'T conclude "tunnel working" from packet counts alone**:
+**DON'T conclude definitive root cause from packet counts alone - correlate with other evidence**:
 ```
-WRONG Analysis:
+INCOMPLETE Analysis:
   Tcpdump: 900 packets bidirectional → Tunnel working ✓
 
-CORRECT Analysis:  
+EVIDENCE-BASED Analysis:  
   Tcpdump cluster1: Echo Request (Egress) ✓
   Tcpdump cluster2: Unreachable (Egress) ✗
-  → cluster2 has local routing issue preventing health checks
-  → NOT a tunnel problem
+  → Evidence suggests cluster2 has local routing issue preventing health checks
+  → Pattern indicates routing, NOT tunnel problem (verify with routing table checks)
 ```
 
 ### IPsec Cable Driver (libreswan) - Most Common Deployment
@@ -560,18 +562,18 @@ cluster2:
 - Shows health check behavior before encryption
 
 **Post-Encapsulation (ESP)**:
-- **Both Egress and Ingress > 0**: Tunnel established and working
-- **Only Egress, no Ingress**: Tunnel one-way (infrastructure blocking?)
-- **No Egress**: IPsec not encrypting (check IPsec SA status)
+- **Both Egress and Ingress > 0**: Evidence suggests tunnel established and working
+- **Only Egress, no Ingress**: Evidence suggests one-way tunnel (possible infrastructure blocking - correlate with firewall rules)
+- **No Egress**: Evidence suggests IPsec not encrypting (check IPsec SA status)
 
 **Cross-Layer Validation**:
-- **ICMP Egress but no ESP Egress**: IPsec encryption failing
-- **ESP matches ICMP counts**: Healthy encryption pipeline
+- **ICMP Egress but no ESP Egress**: Evidence suggests IPsec encryption failing
+- **ESP matches ICMP counts**: Pattern consistent with healthy encryption pipeline
 - **ESP higher than ICMP**: May include other traffic besides health checks
 
 ### Correlation with nftables Counters
 
-**Don't conclude from pcap alone** - correlate with nftables:
+**Don't conclude from pcap alone** - correlate with multiple data sources:
 
 **Pattern**: Egress ICMP but DNAT counter = 0
 ```
@@ -580,8 +582,9 @@ Evidence:
   (C) Tcpdump: 0 Echo Requests ingress at cluster2
   (B) cluster2 DNAT counter: 0
   
-Conclusion: Packets leaving cluster1 but not reaching cluster2
-  → Tunnel failure OR infrastructure blocking
+Observation: Packets leaving cluster1 but not reaching cluster2
+  → Evidence suggests tunnel failure OR infrastructure blocking
+  → Verify with: IPsec SA status, firewall rules, network path
 ```
 
 **Pattern**: Egress + Ingress ICMP but DNAT counter = 0
@@ -590,8 +593,9 @@ Evidence:
   (C) Tcpdump: Bidirectional traffic confirmed
   (B) cluster1 DNAT counter: 0
   
-Conclusion: Tunnel working but post-decapsulation routing broken
-  → Packets reach gateway but not routed to ovn-k8s-mp0
+Observation: Tunnel appears working but packets not reaching DNAT stage
+  → Evidence suggests post-decapsulation routing issue
+  → Verify with: routing tables, OVN policies, ovn-k8s-mp0 interface status
 ```
 
 ## Important Reminders
