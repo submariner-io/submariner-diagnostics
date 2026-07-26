@@ -3617,10 +3617,9 @@ class SubmarinerAnalyzer:
         """
         Verify OVN-K host networking configuration for pinger failures.
 
-        Performs 3 routing checks on ALL nodes:
-        1. IP rule 150 exists for remote Globalnet CIDR
-        2. Table 150 has default route via ovn-k8s-mp0
-        3. ovn-k8s-mp0 interface is UP with IP assigned
+        Performs 3 routing checks on ALL nodes (cable driver dependent):
+        - IPsec/libreswan: IP rule 150, table 150, ovn-k8s-mp0
+        - VXLAN: table 150 (optional), ovn-k8s-mp0 (IP rule 150 NOT required)
 
         Detects:
         - Missing table 150 routes (most common issue)
@@ -3638,6 +3637,13 @@ class SubmarinerAnalyzer:
             return
 
         self._print(f"\n{Colors.BOLD}=== OVN-K Host Networking Verification ==={Colors.ENDC}")
+
+        # Note cable driver dependency for routing checks
+        cable_driver = self.cable_driver or 'unknown'
+        if cable_driver == 'vxlan':
+            self._print(f"  {Colors.BOLD}Note:{Colors.ENDC} Cable driver is VXLAN - IP rule 150 check will be skipped (not required)")
+        elif cable_driver == 'libreswan':
+            self._print(f"  {Colors.BOLD}Note:{Colors.ENDC} Cable driver is IPsec/libreswan - IP rule 150 is required")
 
         cluster_subdirs = self.get_cluster_subdirs()
         if not cluster_subdirs:
@@ -3721,20 +3727,28 @@ class SubmarinerAnalyzer:
             'details': {}
         }
 
-        # Check 1: IP rule 150
-        try:
-            with open(ip_rules_file_path) as f:
-                ip_rules_content = f.read()
-        except OSError:
-            ip_rules_content = None
+        # Check 1: IP rule 150 (only for IPsec cable driver)
+        cable_driver = self.cable_driver or 'unknown'
 
-        if ip_rules_content and remote_cidr:
-            # Look for: "150:	from all to 242.1.0.0/16 lookup 150"
-            if re.search(rf'150:.*to {re.escape(remote_cidr)}.*lookup 150', ip_rules_content):
-                result['check1_ip_rule'] = True
-                result['details']['ip_rule'] = f"Found: to {remote_cidr} lookup 150"
-            else:
-                result['details']['ip_rule'] = f"Missing: to {remote_cidr} lookup 150"
+        if cable_driver == 'vxlan':
+            # VXLAN doesn't need IP rule 150 - traffic routes directly through vxlan-tunnel interface
+            result['check1_ip_rule'] = True  # Mark as "pass" to avoid false positive
+            result['details']['ip_rule'] = "Skipped (not required for VXLAN)"
+        else:
+            # IPsec/libreswan requires IP rule 150
+            try:
+                with open(ip_rules_file_path) as f:
+                    ip_rules_content = f.read()
+            except OSError:
+                ip_rules_content = None
+
+            if ip_rules_content and remote_cidr:
+                # Look for: "150:	from all to 242.1.0.0/16 lookup 150"
+                if re.search(rf'150:.*to {re.escape(remote_cidr)}.*lookup 150', ip_rules_content):
+                    result['check1_ip_rule'] = True
+                    result['details']['ip_rule'] = f"Found: to {remote_cidr} lookup 150"
+                else:
+                    result['details']['ip_rule'] = f"Missing: to {remote_cidr} lookup 150"
 
         # Check 2: Table 150 route - search recursively due to nested gather structure
         table150_content = None
@@ -4182,7 +4196,19 @@ class SubmarinerAnalyzer:
 
             if c1_sending_healthchecks and c2_sending_healthchecks:
                 self._print("        ✓ Both clusters sending health checks (Echo Requests)")
-                self._print("        → Tunnel datapath appears functional")
+                # Check if any cluster is RECEIVING health checks
+                c1_receiving = c1_data.get('echo_request_ingress', 0) > 0 or c1_data.get('echo_reply_ingress', 0) > 0
+                c2_receiving = c2_data.get('echo_request_ingress', 0) > 0 or c2_data.get('echo_reply_ingress', 0) > 0
+
+                if c1_receiving and c2_receiving:
+                    self._print("        ✓ Both clusters also receiving health checks")
+                    self._print("        → Tunnel datapath appears functional")
+                elif not c1_receiving and not c2_receiving:
+                    self._print("        ✗ But neither cluster receiving health checks")
+                    self._print("        → Packets leaving gateway but not arriving at remote")
+                else:
+                    self._print("        ⚠ Asymmetric reception (one cluster receiving, other not)")
+                    self._print("        → Indicates possible one-way routing or filtering issue")
             elif c1_unreachable or c2_unreachable:
                 self._print("        ✗ ICMP Unreachable detected - routing issue preventing health checks")
                 if c1_unreachable:
@@ -4473,9 +4499,10 @@ class SubmarinerAnalyzer:
                 )
                 arp_count = len([line for line in result.stdout.split('\n') if 'ARP' in line])
 
-                # Get sample VXLAN encapsulated packets with direction
+                # Get sample VXLAN encapsulated packets with inner packet decode
+                # Use -T vxlan to decode VXLAN and show inner packets
                 result = subprocess.run(
-                    ['tcpdump', '-nnr', pcap_file, 'port', '4500', '-c', '10'],
+                    ['tcpdump', '-nnr', pcap_file, '-T', 'vxlan', 'port', '4500', '-c', '10'],
                     capture_output=True, text=True, timeout=5
                 )
                 vxlan_lines = result.stdout.split('\n')
@@ -4517,17 +4544,23 @@ class SubmarinerAnalyzer:
                 # Parse VXLAN packet details with direction indicators
                 self._print(f"          {Colors.BOLD}Sample packets:{Colors.ENDC}")
                 sample_count = 0
-                for line in vxlan_lines[:5]:
-                    if 'UDP-encap' in line or 'VXLAN' in line:
+                for line in vxlan_lines[:10]:
+                    # Look for VXLAN packets OR regular UDP port 4500 packets
+                    if 'VXLAN' in line or ('UDP' in line and '4500' in line):
                         # Extract direction and clean up line
                         direction = "Egress" if ' Out ' in line else ("Ingress" if ' In ' in line else "Unknown")
-                        # Remove the leading "?" and interface name for cleaner output
+
+                        # Remove interface names for cleaner output
                         clean_line = line.strip()
-                        if '?' in clean_line:
-                            # Format: "timestamp ? Out/In IP src > dst: ..."
-                            parts = clean_line.split(maxsplit=3)
-                            if len(parts) >= 4:
-                                clean_line = f"{parts[0]} {parts[2]} {parts[3]}"
+                        # Remove leading interface indicators like "br-ex", "eth0", etc.
+                        parts = clean_line.split(maxsplit=3)
+                        if len(parts) >= 4:
+                            # Format: "timestamp interface Out/In IP..."
+                            timestamp = parts[0]
+                            direction_word = parts[2] if parts[2] in ['Out', 'In', 'P'] else parts[1]
+                            rest = ' '.join(parts[3:]) if len(parts) > 3 else ' '.join(parts[2:])
+                            clean_line = f"{timestamp} {direction_word} {rest}"
+
                         self._print(f"            [{direction}] {clean_line}")
                         sample_count += 1
                         if sample_count >= 3:
