@@ -613,9 +613,15 @@ collect_cluster_diagnostics() {
     fi
 
     # subctl diagnose (health checks)
+    # Pass image override if IMAGE_OVERRIDE env var is set
+    local diagnose_image_args=""
+    if [ -n "$IMAGE_OVERRIDE" ]; then
+        diagnose_image_args="$IMAGE_OVERRIDE"
+    fi
+
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Running subctl diagnose for ${cluster_name}..."
     set +e
-    timeout $TIMEOUT_SUBCTL_DIAGNOSE subctl diagnose all --kubeconfig "${kubeconfig}" --context "${context}" > "${cluster_dir}/subctl-diagnose-all.txt" 2>&1
+    timeout $TIMEOUT_SUBCTL_DIAGNOSE subctl diagnose all --kubeconfig "${kubeconfig}" --context "${context}" "${diagnose_image_args}" > "${cluster_dir}/subctl-diagnose-all.txt" 2>&1
     DIAGNOSE_EXIT_CODE=$?
     set -e
     if [ "$DIAGNOSE_EXIT_CODE" -eq 124 ]; then
@@ -1875,6 +1881,16 @@ echo ""
 echo "These timeouts are EXPECTED and collection will continue."
 echo ""
 
+# Initialize IMAGE_OVERRIDE early so it's available for all subctl commands
+# Check if IMAGE_OVERRIDE env var is set, otherwise use default
+if [ -z "$IMAGE_OVERRIDE" ]; then
+    IMAGE_OVERRIDE="--image-override submariner-nettest=quay.io/submariner/nettest:devel"
+else
+    echo "Using custom nettest image from IMAGE_OVERRIDE environment variable"
+    echo "  IMAGE_OVERRIDE=${IMAGE_OVERRIDE}"
+    echo ""
+fi
+
 PHASE2_START=$(date +%s)
 
 # Run both cluster collections in parallel
@@ -2323,10 +2339,10 @@ fi
 
 # Setup image override if needed (for both clusters)
 if [ "$RUN_FIREWALL_INTRA_CLUSTER1" = "true" ] || [ "$RUN_FIREWALL_INTRA_CLUSTER2" = "true" ]; then
-    # Use the same image override as inter-cluster if available, otherwise use quay.io as default
+    # Use the same image override as inter-cluster if available, otherwise use IMAGE_OVERRIDE (set early in Phase 2)
     if [ -z "$FIREWALL_IMAGE_OVERRIDE" ]; then
-        # Use quay.io as default for upstream Submariner
-        FIREWALL_IMAGE_OVERRIDE="--image-override submariner-nettest=quay.io/submariner/nettest:devel"
+        # IMAGE_OVERRIDE is always set (either from env var or default), so just use it
+        FIREWALL_IMAGE_OVERRIDE="$IMAGE_OVERRIDE"
     fi
 fi
 

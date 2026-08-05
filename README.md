@@ -358,6 +358,28 @@ For airgap environments, ensure the following container image is mirrored to you
 - **`quay.io/submariner/nettest:devel`** - Used by several components in the collection script
   (firewall diagnostics, tcpdump collection, connectivity verification)
 
+### Using Custom nettest Image
+
+To use a custom or mirrored nettest image, set the `IMAGE_OVERRIDE` environment variable before running the collection script:
+
+```bash
+export IMAGE_OVERRIDE="--image-override submariner-nettest=your-registry.com/nettest:your-tag"
+
+./collect-full-diagnostics.sh \
+  prod-east /path/to/kubeconfig-east \
+  prod-west /path/to/kubeconfig-west \
+  "tunnel not connected"
+```
+
+This overrides the default image for all subctl commands that use the nettest image:
+
+- `subctl diagnose all`
+- `subctl diagnose firewall inter-cluster`
+- `subctl diagnose firewall intra-cluster`
+- `subctl verify`
+
+**Note:** The image override applies to all nettest-using commands in a single collection run.
+
 ## Self-Learning Diagnostic System
 
 **Help improve submariner-diagnostics by documenting the issues you investigate!**
