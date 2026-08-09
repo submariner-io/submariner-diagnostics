@@ -12,38 +12,54 @@ How to detect whether Submariner is deployed via ACM (ACM-Managed) or standalone
 
 ## Data Sources
 
-Read both files from cluster1:
+Check for submariner-addon pod in gather output:
 
-- `cluster1/acm-addons.txt`
-- `cluster1/submarinerconfig.yaml`
+- `cluster1/gather/*/submariner-addon*.log` or `submariner-addon*.yaml`
+- Collected automatically by `subctl gather`
 
 ## Detection Logic
 
+### Check for submariner-addon pod in gather output
+
+**The `submariner-addon` pod is the definitive indicator:**
+
+- Deployed by ACM Hub to managed clusters
+- Only exists in ACM-managed deployments  
+- Collected automatically by `subctl gather`
+
+**Detection:**
+- Look for files matching `*submariner-addon*` in `cluster1/gather/<cluster-name>/`
+- If found → **ACM-Managed**
+- If not found → **Standalone**
+
+**Why this is definitive:** The submariner-addon pod only exists in ACM-managed clusters.
+This is more reliable than checking for ManagedClusterAddOn (which exists on ACM Hub, not on managed clusters).
+
+## Deployment Type Characteristics
+
 ### ACM-Managed Deployment
 
-**If EITHER file contains actual resources** (not "No ... resources found"):
+**Indicators:**
+- `submariner-addon` pod running in `submariner-operator` namespace
+- Submariner CR has `ownerReferences` pointing to `AppliedManifestWork`
+- Submariner CR `managedFields` shows `manager: work-agent`
 
-```text
-Deployment Type: ACM-Managed
-
-Configuration Requirements:
-  - All changes must be made to SubmarinerConfig CR on ACM hub cluster
-  - DO NOT modify Submariner CR directly (will be overridden)
-  - ACM addon controller propagates changes to managed clusters
-```
+**Configuration Requirements:**
+- All changes must be made to SubmarinerConfig CR on ACM hub cluster
+- DO NOT modify Submariner CR directly (will be overridden by ACM addon)
+- ACM addon controller propagates changes to managed clusters
 
 ### Standalone Submariner Deployment
 
-**If BOTH files say "No ... resources found":**
+**Indicators:**
+- NO `submariner-addon` pod
+- Submariner CR managed by `submariner-operator`
+- No ACM-related resources
 
-```text
-Deployment Type: Standalone Submariner
-
-Configuration Requirements:
-  - Changes made to Submariner CR in each managed cluster
-  - Direct kubectl patch/edit of Submariner CR
-  - No ACM hub cluster involvement
-```
+**Configuration Requirements:**
+- Changes made to Submariner CR in each managed cluster
+- Direct kubectl patch/edit of Submariner CR
+- No ACM hub cluster involvement
 
 ## Example Detection
 

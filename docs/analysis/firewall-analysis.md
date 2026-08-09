@@ -205,3 +205,230 @@ If tunnels are ESTABLISHED (ipsec-status shows STATE_V2_ESTABLISHED_CHILD_SA):
           → Gateway not sending packets
           → Check gateway pod logs for cable driver initialization errors
 ```
+
+## VXLAN-Specific: ICMP Health Check Correlation Analysis
+
+**When to use:** Cable driver is VXLAN and enhanced tcpdump captured ICMP packets.
+
+### Overview
+
+VXLAN health checks send ICMP echo requests through the encrypted tunnel. These can be correlated across:
+1. Gateway health checks (every 1 second)
+2. RouteAgent health checks (every 60 seconds from worker nodes)
+3. nftables SNAT/DNAT counters
+4. ICMP packet capture on both sides
+
+### ICMP Correlation Key
+
+**Primary correlation key:** ICMP ID (not source IP!)
+
+- Each health check stream has a unique ICMP ID
+- Same ICMP ID appears at all packet flow stages
+- Source IP changes (GlobalNet SNAT), but ICMP ID stays constant
+
+### Four-Stage Packet Flow
+
+```
+Stage 1: Cluster1 Egress (SNAT)
+  └─> nftables SNAT counter: Packets leaving gateway
+
+Stage 2: Tunnel Interface
+  └─> tcpdump on vxlan-tunnel: Encapsulated packets
+      Verify VXLAN encapsulation with inner ICMP:
+      tcpdump -nnr <pcap> -T vxlan port 4500
+
+Stage 3: Cluster2 Ingress (DNAT)
+  └─> nftables DNAT counter: Packets arriving at remote gateway
+
+Stage 4: Cluster2 Egress (Reply Path)
+  └─> Reverse flow for ICMP echo reply
+```
+
+### Evidence Collection
+
+**From nftables.log:**
+```bash
+# SNAT egress (cluster1 sending to 242.1.0.0/16)
+counter packets 13049 bytes ...
+
+# DNAT ingress (cluster2 receiving to 242.1.255.240)
+counter packets 9373 bytes ...
+```
+
+**From tcpdump analysis:**
+```
+ICMP ID 15832: 50 requests, 0 replies (0% success)
+ICMP ID 26003: 58 requests, 58 replies (100% success)
+```
+
+### Diagnosis Patterns
+
+#### Pattern A: Table 150 Routing Issue
+
+**Evidence:**
+- Gateway health checks: ICMP ID shows 0% success
+- RouteAgent health checks: ICMP ID shows 100% success
+- Gateway CR status=error
+- RouteAgent CR status=connected
+
+**Analysis:**
+```
+Worker → LocalGW → RemoteGW: ✓ WORKING (RouteAgent proves it)
+Gateway → RemoteGW: ✗ FAILING
+
+Appears to be: Table 150 routing configuration issue on gateway node
+Possible cause: Using network address (.0) instead of gateway IP
+```
+
+**Verification:** Check `*_ip-routes-table150.log` for "default via X.X.X.0" pattern.
+**Important:** Verify this pattern before concluding - check multiple data points.
+
+**Remediation:**
+
+1. **Detect deployment type:**
+   ```bash
+   # Check acm-addons.txt and submarinerconfig.yaml
+   # If either contains resources → ACM-Managed
+   # If both say "No resources found" → Standalone
+   ```
+
+2. **Restart RouteAgent to regenerate table 150 route:**
+
+   **ACM-Managed:**
+   ```bash
+   kubectl delete pod -n <managed-cluster-namespace> \
+     -l component=submariner-route-agent
+   ```
+
+   **Standalone:**
+   ```bash
+   kubectl delete pod -n submariner-operator \
+     -l app=submariner-route-agent
+   ```
+
+3. **Verify after restart:**
+   ```bash
+   ip route show table 150
+   # Should show: default via <valid-host-ip> dev ovn-k8s-mp0
+   ```
+
+**⚠️ WORKAROUND:** RouteAgent restart regenerates table 150 route, but does NOT fix root cause.
+OVN-K or node reboot can revert it. See [ovn-offline-verification.md](ovn-offline-verification.md)
+for full OVN-K configuration verification.
+
+#### Pattern B: Post-Decapsulation Routing Issue
+
+**Evidence:**
+- SNAT counter > 0 (packets leaving cluster1)
+- Tunnel tcpdump shows packets
+- DNAT counter = 0 (packets NOT arriving at cluster2 DNAT rule)
+
+**Analysis:**
+```
+Observation: Packets appear to reach gateway but not DNAT rule
+Possible cause: Post-decapsulation routing issue
+```
+
+**This pattern suggests:** After VXLAN decapsulation, packets may not be routed to ovn-k8s-mp0 interface where DNAT rules are applied.
+
+**Use cautious language:** "appears to be", "most likely", "evidence suggests" - this is complex infrastructure behavior.
+
+#### Pattern C: Infrastructure Blocking
+
+**Evidence:**
+- SNAT counter > 0
+- Tunnel tcpdump = 0 packets
+- DNAT counter = 0
+
+**IMPORTANT:** Before concluding infrastructure blocking, check Gateway CR tunnel status on both clusters:
+
+- **If asymmetric** (one cluster connected, other shows different status):
+  - NOT infrastructure blocking
+  - Pattern indicates local routing or SNAT issue
+  - See [asymmetric-tunnel-analysis.md](asymmetric-tunnel-analysis.md)
+
+- **If symmetric** (both clusters show same error status):
+  - Proceed with infrastructure blocking analysis
+
+**Analysis (when symmetric error):**
+```
+Evidence suggests packets not leaving source gateway
+Possible cause: Infrastructure/firewall blocking
+```
+
+#### Pattern D: Source Not Sending
+
+**Evidence:**
+- SNAT counter = 0
+- Tunnel tcpdump = 0
+- DNAT counter = 0
+
+**Analysis:**
+```
+Source gateway not sending health checks
+Check: IP rules, routing table 150, gateway pod health
+```
+
+### Correlation Methodology
+
+1. **Extract ICMP IDs from tcpdump:**
+   - Look for patterns like "ICMP ID 12345: X requests, Y replies"
+   - Group by success rate (0-30% = failing, 90-100% = working)
+
+2. **Identify health check types:**
+   - High-frequency (1-second interval) = Gateway checks
+   - Low-frequency (60-second interval) = RouteAgent checks
+
+3. **Cross-reference with nftables:**
+   - Nonzero SNAT egress counter indicates gateway is sending
+   - Nonzero DNAT ingress counter indicates remote gateway is receiving
+   - Counters are cumulative and track ALL traffic, not specific ICMP streams
+   - Use as coarse flow health check, not for isolating individual packet drops
+
+4. **Correlate with CR status:**
+   - Gateway CR status reflects gateway-to-gateway health
+   - RouteAgent CR status reflects full datapath (worker→gateway→remote)
+
+### Important Notes
+
+- **Don't conclude from single data point** - correlate all three stages
+- **Always use cautious language** - "appears that", "evidence suggests", "most likely"
+- **Present as evidence requiring correlation** - not definitive root cause
+- **If Submariner config correct but broken** - possible infrastructure issue
+- **Recommend community contact** - provide diagnostic tarball for investigation
+
+### Example Analysis
+
+```
+ICMP Analysis Results:
+  Gateway health checks (ICMP ID 15832): 0% success
+  RouteAgent health checks (ICMP ID 26003): 100% success
+
+nftables Counters:
+  Cluster1 SNAT egress: 13,049 packets
+  Cluster2 DNAT ingress: 63,552 packets
+
+  ⚠️  IMPORTANT: nftables counters are cumulative since ruleset loaded.
+  They track ALL traffic (not just health checks), so non-zero counters
+  indicate overall flow health but cannot isolate specific ICMP streams.
+  Use ICMP ID correlation to distinguish health check vs other traffic.
+
+Cross-Reference with CRs:
+  Gateway CR: status=error
+  RouteAgent CR: status=connected
+
+Pattern: Table 150 Routing Issue
+  ✓ Worker→GW→Remote path works (RouteAgent proves it)
+  ✗ Gateway→Remote path fails (gateway checks fail)
+
+Appears to be: Gateway node table 150 configuration issue
+Verify: Check *_ip-routes-table150.log for network address pattern
+Recommend: Further investigation with additional data points
+```
+
+### When to Use This Analysis
+
+- **Required:** Cable driver = VXLAN
+- **Helpful:** Enhanced tcpdump with ICMP capture
+- **Critical:** Gateway error + RouteAgent connected pattern
+- **Skip:** Both Gateway and RouteAgent show same status (focus on tunnel analysis first)
