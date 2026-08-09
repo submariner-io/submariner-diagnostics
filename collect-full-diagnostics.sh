@@ -2198,6 +2198,58 @@ else
     echo "  → No OVN-K CNI detected - skipping OVN-K pinger diagnostics"
 fi
 
+# Collect NetworkPolicies if health check failures detected
+# This helps identify if network policies might be blocking Submariner traffic
+# Reuses existing health check status variables from earlier checks
+if [ "$TUNNEL_STATUS_CLUSTER1" != "connected" ] || [ "$TUNNEL_STATUS_CLUSTER2" != "connected" ] || \
+   [ "$ROUTEAGENT_ERROR_C1" == "true" ] || [ "$ROUTEAGENT_ERROR_C2" == "true" ]; then
+
+    echo ""
+    echo "=== Health check failures detected - collecting NetworkPolicies ==="
+    echo "This will help identify if network policies might be blocking Submariner traffic."
+    echo ""
+
+    # Collect for cluster1
+    ANP_COUNT1=0
+    NP_COUNT1=0
+
+    if kubectl get adminnetworkpolicies --kubeconfig "${KUBECONFIG1}" --context "${CLUSTER1_CONTEXT}" -o yaml \
+        > "${OUTPUT_DIR}/cluster1/adminnetworkpolicies.yaml" 2>/dev/null; then
+        ANP_COUNT1=$(kubectl get adminnetworkpolicies --kubeconfig "${KUBECONFIG1}" --context "${CLUSTER1_CONTEXT}" --no-headers 2>/dev/null | wc -l)
+    fi
+
+    if kubectl get networkpolicies --all-namespaces --kubeconfig "${KUBECONFIG1}" --context "${CLUSTER1_CONTEXT}" -o yaml \
+        > "${OUTPUT_DIR}/cluster1/networkpolicies-all.yaml" 2>/dev/null; then
+        NP_COUNT1=$(kubectl get networkpolicies --all-namespaces --kubeconfig "${KUBECONFIG1}" --context "${CLUSTER1_CONTEXT}" --no-headers 2>/dev/null | wc -l)
+    fi
+
+    echo "  Cluster1: ${ANP_COUNT1} AdminNetworkPolicies, ${NP_COUNT1} NetworkPolicies"
+
+    # Collect for cluster2
+    ANP_COUNT2=0
+    NP_COUNT2=0
+
+    if kubectl get adminnetworkpolicies --kubeconfig "${KUBECONFIG2}" --context "${CLUSTER2_CONTEXT}" -o yaml \
+        > "${OUTPUT_DIR}/cluster2/adminnetworkpolicies.yaml" 2>/dev/null; then
+        ANP_COUNT2=$(kubectl get adminnetworkpolicies --kubeconfig "${KUBECONFIG2}" --context "${CLUSTER2_CONTEXT}" --no-headers 2>/dev/null | wc -l)
+    fi
+
+    if kubectl get networkpolicies --all-namespaces --kubeconfig "${KUBECONFIG2}" --context "${CLUSTER2_CONTEXT}" -o yaml \
+        > "${OUTPUT_DIR}/cluster2/networkpolicies-all.yaml" 2>/dev/null; then
+        NP_COUNT2=$(kubectl get networkpolicies --all-namespaces --kubeconfig "${KUBECONFIG2}" --context "${CLUSTER2_CONTEXT}" --no-headers 2>/dev/null | wc -l)
+    fi
+
+    echo "  Cluster2: ${ANP_COUNT2} AdminNetworkPolicies, ${NP_COUNT2} NetworkPolicies"
+
+    # Log to manifest
+    {
+    echo ""
+    echo "NetworkPolicies (collected due to health check failures):"
+    echo "  Cluster1: ${ANP_COUNT1} AdminNetworkPolicies, ${NP_COUNT1} NetworkPolicies"
+    echo "  Cluster2: ${ANP_COUNT2} AdminNetworkPolicies, ${NP_COUNT2} NetworkPolicies"
+    } >> "${OUTPUT_DIR}/manifest.txt"
+fi
+
 # OVN-K table 150 supplemental collection
 # This fills the gap left by subctl gather which only collects from gateway nodes
 echo ""

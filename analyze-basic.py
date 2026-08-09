@@ -5521,6 +5521,9 @@ class SubmarinerAnalyzer:
             # Add context-aware recommendations if no clear root cause found
             self.add_context_aware_recommendations()
 
+            # Check NetworkPolicies as possible blocker (only if no definitive root cause)
+            self.check_network_policies_as_possible_blocker()
+
         # Generate report in appropriate format
         if self.output_format == 'slack':
             self.generate_slack_report()
@@ -5528,6 +5531,70 @@ class SubmarinerAnalyzer:
             self.generate_report()
 
         return True
+
+    def check_network_policies_as_possible_blocker(self):
+        """
+        Flag NetworkPolicies as potential issue when health check failures exist
+        but no definitive root cause was found.
+
+        Only flags if:
+        1. Datapath issues exist (faulty_states not empty)
+        2. No definitive root cause found (no IPsec, routing, table 150 issues)
+        3. NetworkPolicies were collected (indicating health check failures)
+        """
+        # Only run if datapath issues exist
+        if not self.faulty_states:
+            return
+
+        # Check if we found a definitive root cause
+        has_definitive_cause = any([
+            "IPsec" in str(self.issues),
+            "ipsec" in str(self.issues).lower(),
+            "table 150" in str(self.issues).lower(),
+            "routing" in str(self.issues).lower() and "OVN" in str(self.issues),
+            "MTU" in str(self.issues),
+        ])
+
+        if has_definitive_cause:
+            return  # Don't clutter output if we found the real issue
+
+        # Check if NetworkPolicies were collected on either cluster
+        for cluster in ['cluster1', 'cluster2']:
+            anp_file = os.path.join(self.diagnostics_dir, cluster, 'adminnetworkpolicies.yaml')
+            np_file = os.path.join(self.diagnostics_dir, cluster, 'networkpolicies-all.yaml')
+
+            if os.path.exists(anp_file) or os.path.exists(np_file):
+                # Count policies
+                anp_count = 0
+                np_count = 0
+
+                if os.path.exists(anp_file):
+                    anp_content = self.read_file(f"{cluster}/adminnetworkpolicies.yaml")
+                    if anp_content and anp_content != "No resources found":
+                        try:
+                            anp_yaml = yaml.safe_load(anp_content)
+                            if anp_yaml and 'items' in anp_yaml:
+                                anp_count = len(anp_yaml['items'])
+                        except (yaml.YAMLError, KeyError, TypeError):
+                            pass
+
+                if os.path.exists(np_file):
+                    np_content = self.read_file(f"{cluster}/networkpolicies-all.yaml")
+                    if np_content and np_content != "No resources found":
+                        try:
+                            np_yaml = yaml.safe_load(np_content)
+                            if np_yaml and 'items' in np_yaml:
+                                np_count = len(np_yaml['items'])
+                        except (yaml.YAMLError, KeyError, TypeError):
+                            pass
+
+                if anp_count > 0 or np_count > 0:
+                    self._print(f"\n  {Colors.WARNING}⚠{Colors.ENDC} {cluster}: NetworkPolicies detected ({anp_count} AdminNetworkPolicies, {np_count} NetworkPolicies)")
+                    self._print("    → No definitive root cause found - network policies could be blocking Submariner traffic")
+
+                    self.recommendations.append(
+                        f"{cluster}: NetworkPolicies detected - verify they allow Submariner traffic"
+                    )
 
 
 def main():
