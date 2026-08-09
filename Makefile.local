@@ -1,11 +1,12 @@
 # Local development Makefile for submariner-diagnostics
 # For linting, testing, and validation
 
-.PHONY: lint lint-python lint-shell lint-markdown format-python test validate-case help
+.PHONY: lint lint-python lint-shell lint-markdown lint-commit format-python test validate-case help
 
 # Python linting
 lint-python:
 	@echo "Running Python linting..."
+	@ruff check .
 	@python3 -m flake8 analyze-basic.py --max-line-length=120
 	@python3 -m pylint analyze-basic.py --max-line-length=120
 	@echo "Checking Python formatting..."
@@ -21,8 +22,23 @@ lint-markdown:
 	@echo "Running markdown linting..."
 	@markdownlint docs/**/*.md .claude/workflows/*.md README.md CLAUDE.md --ignore node_modules
 
+# Commit message linting (requires gitlint: pip install gitlint)
+lint-commit:
+	@echo "Running commit message linting..."
+	@if command -v gitlint >/dev/null 2>&1; then \
+		if git rev-parse --verify origin/devel >/dev/null 2>&1; then \
+			gitlint --commits origin/devel..HEAD; \
+		else \
+			echo "⚠️  origin/devel not found - run 'git fetch origin devel' first"; \
+			exit 1; \
+		fi; \
+	else \
+		echo "⚠️  gitlint not installed - skipping commit message check"; \
+		echo "   Install: pip install gitlint"; \
+	fi
+
 # All linting
-lint: lint-python lint-shell lint-markdown
+lint: lint-python lint-shell lint-markdown lint-commit
 	@echo "All lint checks complete"
 
 # Fix Python formatting
@@ -52,7 +68,7 @@ verify: lint test
 # Install development dependencies
 install-dev-deps:
 	@echo "Installing Python development dependencies..."
-	@pip install pytest flake8 pylint black isort pyyaml
+	@pip install pytest flake8 pylint black isort pyyaml ruff gitlint
 	@echo "Installing Node.js development dependencies..."
 	@npm install -g markdownlint-cli
 	@echo "✓ Development dependencies installed"
@@ -61,11 +77,18 @@ install-dev-deps:
 help:
 	@echo "Submariner Diagnostics - Local Development Tasks"
 	@echo ""
-	@echo "Linting:"
-	@echo "  make lint              - Run all lint checks"
-	@echo "  make lint-python       - Run Python linting (flake8, pylint, black)"
+	@echo "Linting (Local - same as CI):"
+	@echo "  make lint              - Run all lint checks (ruff, flake8, pylint, shellcheck, markdownlint, gitlint)"
+	@echo "  make lint-python       - Run Python linting (ruff, flake8, pylint, black)"
 	@echo "  make lint-shell        - Run shellcheck on shell scripts"
 	@echo "  make lint-markdown     - Run markdownlint on documentation"
+	@echo "  make lint-commit       - Run gitlint on commit messages"
+	@echo ""
+	@echo "CI Linting (run via Makefile targets that match CI):"
+	@echo "  make lint-commit       - Run gitlint on commit messages (local)"
+	@echo "  make lint-markdown     - Run markdownlint on docs (local)"
+	@echo "  make lint-shell        - Run shellcheck on scripts (local)"
+	@echo "  ruff check .           - Run ruff Python linter (local)"
 	@echo ""
 	@echo "Formatting:"
 	@echo "  make format-python     - Auto-format Python code with black and isort"

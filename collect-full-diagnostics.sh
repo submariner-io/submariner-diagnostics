@@ -2041,6 +2041,21 @@ echo "  Cluster2: ${TUNNEL_STATUS_CLUSTER2}"
 CNI_CLUSTER1=$(grep "Network plugin:" "${OUTPUT_DIR}/cluster1/subctl-show-all.txt" 2>/dev/null | awk '{print $NF}' | tr -d '[:space:]')
 CNI_CLUSTER2=$(grep "Network plugin:" "${OUTPUT_DIR}/cluster2/subctl-show-all.txt" 2>/dev/null | awk '{print $NF}' | tr -d '[:space:]')
 
+# Collect OVN-Kubernetes configuration if OVN-K detected
+if [[ "$CNI_CLUSTER1" == "OVNKubernetes" ]]; then
+    echo "  OVN-Kubernetes detected on cluster1 - collecting OVN-K configuration..."
+    kubectl get network.operator.openshift.io cluster -o yaml \
+        --kubeconfig "${KUBECONFIG1}" --context "${CLUSTER1_CONTEXT}" \
+        > "${OUTPUT_DIR}/cluster1/ovn-operator-config.yaml" 2>/dev/null || echo "  ⚠ Could not collect OVN operator config (not OpenShift or no permissions)"
+fi
+
+if [[ "$CNI_CLUSTER2" == "OVNKubernetes" ]]; then
+    echo "  OVN-Kubernetes detected on cluster2 - collecting OVN-K configuration..."
+    kubectl get network.operator.openshift.io cluster -o yaml \
+        --kubeconfig "${KUBECONFIG2}" --context "${CLUSTER2_CONTEXT}" \
+        > "${OUTPUT_DIR}/cluster2/ovn-operator-config.yaml" 2>/dev/null || echo "  ⚠ Could not collect OVN operator config (not OpenShift or no permissions)"
+fi
+
 # Collect tcpdump only if tunnel is NOT connected on either cluster
 if [ "$TUNNEL_STATUS_CLUSTER1" != "connected" ] || [ "$TUNNEL_STATUS_CLUSTER2" != "connected" ]; then
     echo ""

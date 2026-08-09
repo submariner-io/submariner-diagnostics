@@ -29,6 +29,7 @@ class Colors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
 
+
 class SubmarinerAnalyzer:
     def __init__(self, tarball_path, output_format='terminal'):
         self.tarball_path = tarball_path
@@ -180,6 +181,31 @@ class SubmarinerAnalyzer:
             return yaml.safe_load(content)
         except yaml.YAMLError:
             return None
+
+    def detect_deployment_type(self):
+        """Detect if this is ACM-managed or Standalone Submariner deployment
+
+        ACM-managed deployments have submariner-addon pod running in submariner-operator namespace.
+        This pod is deployed by ACM Hub and only exists in ACM-managed clusters.
+
+        Returns:
+            str: 'ACM-Managed' or 'Standalone'
+        """
+        # Check for submariner-addon pod in gather output
+        # The pod is collected by subctl gather and indicates ACM-managed deployment
+        cluster_subdirs = self.get_cluster_subdirs()
+        for cluster in ['cluster1', 'cluster2']:
+            actual_cluster_name = cluster_subdirs.get(cluster) if cluster_subdirs else None
+            if actual_cluster_name:
+                gather_dir = os.path.join(self.diagnostics_dir, cluster, 'gather', actual_cluster_name)
+                if os.path.exists(gather_dir):
+                    # Look for submariner-addon pod files (logs, yaml)
+                    addon_files = self.find_files_recursive(gather_dir, '*submariner-addon*.log', max_depth=2)
+                    if addon_files:
+                        return "ACM-Managed"
+
+        # No submariner-addon pod found = Standalone deployment
+        return "Standalone"
 
     def analyze_manifest(self):
         """Read manifest for metadata"""
@@ -715,7 +741,6 @@ class SubmarinerAnalyzer:
         firewall_dir = os.path.join(self.diagnostics_dir, "firewall")
         if not os.path.exists(firewall_dir):
             return
-
 
         # Detect NAT-T port from Submariner CR (default 4500)
         natt_port = 4500  # default
@@ -2152,6 +2177,418 @@ class SubmarinerAnalyzer:
 
                 self.issues.append(f"{cluster}: {len(error_agents)} RouteAgent(s) with errors")
 
+    def analyze_vxlan_icmp_correlation(self):
+        """Analyze VXLAN tcpdump for ICMP packet correlation across gateway and RouteAgent health checks
+
+        Correlates:
+        - Gateway health checks (every 1 second)
+        - RouteAgent health checks (every 60 seconds)
+        - ICMP ID as correlation key across packet flow stages
+        - SNAT/DNAT nftables counters
+
+        Detects:
+        - Table 150 routing issues (gateway checks fail, RouteAgent checks work)
+        - Infrastructure blocking patterns
+        - Post-decapsulation routing issues
+        """
+        tcpdump_dir = os.path.join(self.diagnostics_dir, 'tcpdump')
+        if not os.path.exists(tcpdump_dir):
+            return
+
+        # Only run if VXLAN cable driver is detected
+        # Prefer self.cable_driver set from manifest, fallback to endpoint scan
+        if self.cable_driver:
+            cable_driver = self.cable_driver.strip().lower()
+        else:
+            # Fallback: scan endpoints if cable_driver not set from manifest
+            cable_driver = None
+            for cluster in ['cluster1', 'cluster2']:
+                cluster_subdirs = self.get_cluster_subdirs()
+                actual_cluster_name = cluster_subdirs.get(cluster) if cluster_subdirs else None
+
+                if actual_cluster_name:
+                    gather_dir = os.path.join(
+                        self.diagnostics_dir, cluster, 'gather', actual_cluster_name
+                    )
+                    # Use recursive search to handle nested gather layouts
+                    endpoint_files = self.find_files_recursive(gather_dir, 'endpoints_*.yaml', max_depth=3)
+
+                    for endpoint_file in endpoint_files:
+                        endpoint_yaml = self.read_yaml(
+                            os.path.relpath(endpoint_file, self.diagnostics_dir)
+                        )
+                        if endpoint_yaml and isinstance(endpoint_yaml, dict):
+                            backend = endpoint_yaml.get('spec', {}).get('backend', '').strip().lower()
+                            if backend == 'vxlan':
+                                cable_driver = 'vxlan'
+                                break
+
+                    if cable_driver:
+                        break
+
+        if cable_driver != 'vxlan':
+            return
+
+        self._print(f"\n{Colors.BOLD}=== Analyzing VXLAN ICMP Health Check Correlation ==={Colors.ENDC}")
+        self._print("  Cable driver: VXLAN - performing deep packet flow analysis")
+
+        # Read tcpdump analysis files
+        cluster1_files = glob.glob(os.path.join(tcpdump_dir, 'cluster1-gateway-*-analysis.txt'))
+        cluster2_files = glob.glob(os.path.join(tcpdump_dir, 'cluster2-gateway-*-analysis.txt'))
+
+        if not cluster1_files or not cluster2_files:
+            self._print(f"  {Colors.WARNING}⚠{Colors.ENDC} VXLAN tcpdump analysis files not found")
+            return
+
+        cluster1_analysis = self.read_file(os.path.relpath(cluster1_files[0], self.diagnostics_dir))
+        cluster2_analysis = self.read_file(os.path.relpath(cluster2_files[0], self.diagnostics_dir))
+
+        # Extract ICMP statistics from analysis files
+        # Pattern: ICMP ID 12345: 50 requests, 48 replies (96% success)
+        icmp_pattern = r'ICMP ID (\d+):\s+(\d+)\s+requests?,\s+(\d+)\s+repl(?:y|ies)\s+\((\d+)%\s+success\)'
+
+        def parse_icmp_stats(content):
+            stats = {}
+            if not content:
+                return stats
+            for match in re.finditer(icmp_pattern, content):
+                stats[int(match.group(1))] = {
+                    'requests': int(match.group(2)),
+                    'replies': int(match.group(3)),
+                    'success': int(match.group(4)),
+                }
+            return stats
+
+        cluster1_icmp = parse_icmp_stats(cluster1_analysis)
+        cluster2_icmp = parse_icmp_stats(cluster2_analysis)
+
+        # Correlate with Gateway/RouteAgent status per cluster
+        pattern_clusters = []  # Clusters showing the table 150 pattern
+
+        for cluster in ['cluster1', 'cluster2']:
+            cluster_subdirs = self.get_cluster_subdirs()
+            actual_cluster_name = cluster_subdirs.get(cluster) if cluster_subdirs else None
+
+            gateway_failure = False
+            routeagent_success = False
+
+            if actual_cluster_name:
+                # Check gateway status
+                gateway_status = self.get_gateway_status(cluster, actual_cluster_name)
+                if gateway_status and gateway_status.get('status') == 'error':
+                    gateway_failure = True
+
+            # Check RouteAgent status
+            agents = self.find_and_read_routeagent_crs(cluster)
+            for agent in agents:
+                status_obj = agent.get('status', {})
+                remote_endpoints = status_obj.get('remoteEndpoints', [])
+                if remote_endpoints:
+                    endpoint_status = remote_endpoints[0].get('status', '')
+                    if endpoint_status == 'connected':
+                        routeagent_success = True
+                        break
+
+            # If this cluster has both conditions, add to pattern list
+            if gateway_failure and routeagent_success:
+                pattern_clusters.append(cluster)
+
+        # Analyze ICMP patterns
+        if cluster1_icmp or cluster2_icmp:
+            self._print(f"\n  {Colors.BOLD}ICMP Health Check Analysis:{Colors.ENDC}")
+
+            # Categorize ICMP IDs by success rate (process clusters separately to handle overlapping IDs)
+            failed_ids = []
+            success_ids = []
+
+            for icmp_id, stats in cluster1_icmp.items():
+                if stats['success'] < 50:
+                    failed_ids.append((icmp_id, stats))
+                elif stats['success'] >= 90:
+                    success_ids.append((icmp_id, stats))
+
+            for icmp_id, stats in cluster2_icmp.items():
+                if stats['success'] < 50:
+                    failed_ids.append((icmp_id, stats))
+                elif stats['success'] >= 90:
+                    success_ids.append((icmp_id, stats))
+
+            if failed_ids and success_ids and pattern_clusters:
+                self._print(f"\n  {Colors.BOLD}🔍 TABLE 150 ROUTING ISSUE PATTERN DETECTED:{Colors.ENDC}")
+                self._print(f"    Affected clusters: {', '.join(pattern_clusters)}")
+                self._print(f"    {Colors.FAIL}✗{Colors.ENDC} Gateway health checks: {Colors.FAIL}FAILING{Colors.ENDC}")
+                self._print(
+                    f"    {Colors.OKGREEN}✓{Colors.ENDC} RouteAgent health checks: "
+                    f"{Colors.OKGREEN}SUCCESS{Colors.ENDC}"
+                )
+                self._print(f"\n  {Colors.BOLD}Analysis:{Colors.ENDC}")
+                self._print("    → Worker-to-gateway-to-remote path: WORKING")
+                self._print("    → Gateway-to-remote path: FAILING")
+                self._print("    → Most likely: Table 150 routing misconfiguration")
+                self._print(f"\n  {Colors.BOLD}Recommendation:{Colors.ENDC}")
+                self._print("    - Check routing table 150 on gateway nodes")
+                self._print("    - Verify gateway IP is correct (not network address)")
+                self._print("    - Known issue with OVN-K Interconnect after node reboot")
+
+                self.findings.append(
+                    "Table 150 routing issue pattern: gateway checks fail, RouteAgent checks work"
+                )
+                self.recommendations.insert(
+                    0,
+                    "Check table 150 routes on gateway nodes - "
+                    "likely using network address instead of gateway IP"
+                )
+
+            elif failed_ids:
+                self._print(f"  {Colors.FAIL}✗{Colors.ENDC} Failed ICMP streams detected:")
+                for icmp_id, stats in failed_ids[:3]:
+                    self._print(f"    ICMP ID {icmp_id}: {stats['success']}% success")
+
+            if success_ids:
+                self._print(f"  {Colors.OKGREEN}✓{Colors.ENDC} Successful ICMP streams: {len(success_ids)}")
+
+    def check_ovn_table150_routes(self):
+        """Check OVN-K routing table 150 for invalid gateway addresses (network address instead of host)
+
+        Pattern: Table 150 using network address causes egress health check packets from GW to fail routing.
+
+        Detection confidence increases with:
+        - Gateway CR shows error (health check failures)
+        - RouteAgent CR shows connected (proves full path works)
+        - Other GW nodes have correct gateway IP (comparison shows the difference)
+        - Remote cluster shows ingress health check packet issues
+        """
+        self._print(f"\n{Colors.BOLD}=== Checking OVN-K Table 150 Routes ==={Colors.ENDC}")
+
+        cluster_subdirs = self.get_cluster_subdirs()
+
+        # Track routes across all nodes for comparison
+        all_table150_routes = {}  # {cluster: {node: gateway_ip}}
+
+        for cluster in ['cluster1', 'cluster2']:
+            # Check if CNI is OVN-Kubernetes
+            cni = self.detect_cni(cluster)
+            if cni != 'OVNKubernetes':
+                continue
+
+            self._print(f"  {cluster}: Checking table 150 routes (OVN-Kubernetes detected)")
+
+            actual_cluster_name = cluster_subdirs.get(cluster) if cluster_subdirs else None
+            if not actual_cluster_name:
+                continue
+
+            gather_dir = os.path.join(self.diagnostics_dir, cluster, 'gather', actual_cluster_name)
+            if not os.path.exists(gather_dir):
+                continue
+
+            # Find all table 150 route files using recursive search
+            table150_file_paths = self.find_files_recursive(
+                gather_dir, '*_ip-routes-table150.log', max_depth=4
+            )
+
+            if not table150_file_paths:
+                self._print(f"    {Colors.WARNING}⚠{Colors.ENDC} No table 150 route files found")
+                continue
+
+            # Track routes for this cluster
+            if cluster not in all_table150_routes:
+                all_table150_routes[cluster] = {}
+
+            for route_path in table150_file_paths:
+                # Extract node name from filename (format: nodename_ip-routes-table150.log)
+                route_file = os.path.basename(route_path)
+                node_name = route_file.replace('_ip-routes-table150.log', '')
+
+                try:
+                    with open(route_path) as f:
+                        content = f.read()
+
+                    # Look for "default via X.X.X.X" pattern
+                    import re
+                    route_match = re.search(r'default via (\d+\.\d+\.\d+\.\d+)\s+dev\s+ovn-k8s-mp0', content)
+
+                    if route_match:
+                        gateway_ip = route_match.group(1)
+                        all_table150_routes[cluster][node_name] = gateway_ip
+
+                        # Check if it's a network address (.0)
+                        if gateway_ip.endswith('.0'):
+                            # This is SUSPICIOUS - network address instead of host IP
+                            # Now build confidence based on corroborating evidence
+
+                            # Try to find the correct gateway IP from main routing table
+                            correct_gateway = None
+                            main_routes_path = route_path.replace('_ip-routes-table150.log', '_ip-routes.log')
+
+                            if os.path.exists(main_routes_path):
+                                with open(main_routes_path) as f:
+                                    main_content = f.read()
+                                # Look for wider cluster route (/16 or /17) with gateway on ovn-k8s-mp0
+                                # Example: "172.17.0.0/17 via 172.17.0.1 dev ovn-k8s-mp0"
+                                # Scan all routes and select the widest qualifying route
+                                best_prefix_len = 18  # Start with threshold (only accept <=17)
+                                for match in re.finditer(
+                                    r'(\d+\.\d+\.\d+\.\d+)/(\d+)\s+via\s+(\d+\.\d+\.\d+\.\d+)\s+dev\s+ovn-k8s-mp0',
+                                    main_content
+                                ):
+                                    prefix_len = int(match.group(2))
+                                    # Find widest qualifying route (smallest prefix_len <= 17)
+                                    if prefix_len <= 17 and prefix_len < best_prefix_len:
+                                        best_prefix_len = prefix_len
+                                        correct_gateway = match.group(3)
+
+                            # Check Gateway/RouteAgent status for correlation
+                            gateway_status = None
+                            routeagent_connected = False
+
+                            if actual_cluster_name:
+                                gateway_status = self.get_gateway_status(cluster, actual_cluster_name)
+
+                            if cluster in self.routeagent_data:
+                                routeagent_connected = self.routeagent_data[cluster].get('connected', 0) > 0
+
+                            # Determine confidence level
+                            confidence = "SUSPICIOUS"
+                            evidence_count = 0
+
+                            if gateway_status and gateway_status.get('status') == 'error':
+                                evidence_count += 1
+                            if routeagent_connected:
+                                evidence_count += 1
+                            if correct_gateway and not correct_gateway.endswith('.0'):
+                                evidence_count += 1
+
+                            if evidence_count >= 2:
+                                confidence = "HIGH CONFIDENCE"
+
+                            # Print detection with confidence level
+                            self._print(
+                                f"\n  {Colors.FAIL}✗ {confidence} TABLE 150 MISCONFIGURATION "
+                                f"on {node_name}:{Colors.ENDC}"
+                            )
+                            self._print(
+                                f"    Table 150 route: default via {Colors.FAIL}{gateway_ip}"
+                                f"{Colors.ENDC} dev ovn-k8s-mp0"
+                            )
+                            self._print(
+                                f"    {Colors.FAIL}Problem:{Colors.ENDC} Using network address "
+                                "(.0) instead of host IP"
+                            )
+                            self._print(
+                                f"    {Colors.FAIL}Impact:{Colors.ENDC} Egress health checks "
+                                "from this GW node will fail routing"
+                            )
+
+                            if correct_gateway:
+                                self._print(f"    {Colors.OKGREEN}Expected gateway:{Colors.ENDC} {correct_gateway}")
+
+                            # Show corroborating evidence
+                            self._print(f"\n    {Colors.BOLD}Corroborating Evidence:{Colors.ENDC}")
+                            if gateway_status and gateway_status.get('status') == 'error':
+                                self._print(
+                                    f"      {Colors.FAIL}✓{Colors.ENDC} Gateway CR shows error "
+                                    "(health check failures)"
+                                )
+                            if routeagent_connected:
+                                self._print(
+                                    f"      {Colors.OKGREEN}✓{Colors.ENDC} RouteAgent CR shows "
+                                    "connected (proves full path works)"
+                                )
+                                self._print(
+                                    "         → This confirms table 150 affects only "
+                                    "GW-originated traffic"
+                                )
+
+                            # We'll compare across nodes after collecting all routes
+
+                            self.issues.append(
+                                f"{cluster}/{node_name}: {confidence} - Table 150 using "
+                                f"network address {gateway_ip} - egress health checks will fail"
+                            )
+                            self.faulty_states.append(
+                                f"{cluster}/{node_name}: {confidence} - Table 150 misconfigured "
+                                "(network address breaks GW egress)"
+                            )
+
+                            workaround = (
+                                f"{cluster}/{node_name}: WORKAROUND - restore the table 150 route "
+                                "(affects GW egress health checks; OVN-K or a node reboot can revert it, "
+                                "so it is not a root-cause fix):"
+                            )
+                            if correct_gateway:
+                                workaround += (
+                                    f" ip route del default table 150 && "
+                                    f"ip route add default via {correct_gateway} "
+                                    "dev ovn-k8s-mp0 table 150"
+                                )
+                            else:
+                                workaround += (
+                                    " ip route del default table 150 && "
+                                    "ip route add default via <gateway-ip> "
+                                    "dev ovn-k8s-mp0 table 150"
+                                )
+                            self.recommendations.insert(0, workaround)
+
+                            if evidence_count >= 2:
+                                self.recommendations.insert(
+                                    1,
+                                    f"{cluster}: HIGH CONFIDENCE - Table 150 misconfiguration "
+                                    "confirmed by multiple evidence"
+                                )
+                            else:
+                                self.recommendations.insert(
+                                    1,
+                                    f"{cluster}: Verify table 150 configuration - "
+                                    "appears to be OVN-K routing issue"
+                                )
+                        else:
+                            # Valid host IP
+                            self._print(f"    {Colors.OKGREEN}✓{Colors.ENDC} {node_name}: Table 150 gateway OK ({gateway_ip})")
+
+                except (OSError, UnicodeDecodeError) as e:
+                    self._print(f"    {Colors.WARNING}⚠{Colors.ENDC} Error reading {route_file}: {e}")
+
+        # After processing all routes, compare across nodes within same cluster
+        for cluster, routes in all_table150_routes.items():
+            if len(routes) < 2:
+                continue  # Need at least 2 nodes to compare
+
+            # Find nodes with network addresses (.0) and nodes with valid IPs
+            network_addr_nodes = {node: ip for node, ip in routes.items() if ip.endswith('.0')}
+            valid_nodes = {node: ip for node, ip in routes.items() if not ip.endswith('.0')}
+
+            if network_addr_nodes and valid_nodes:
+                # STRONG EVIDENCE: Some nodes have correct gateway, others have network address
+                self._print(
+                    f"\n  {Colors.FAIL}⚠ COMPARISON WITHIN {cluster.upper()}: "
+                    f"MIXED TABLE 150 ROUTES DETECTED{Colors.ENDC}"
+                )
+                self._print(
+                    f"    {Colors.BOLD}This is STRONG EVIDENCE of "
+                    f"misconfiguration:{Colors.ENDC}"
+                )
+                self._print("\n    Nodes with INCORRECT routes (network address):")
+                for node, ip in network_addr_nodes.items():
+                    short_node = node[-12:] if len(node) > 12 else node
+                    self._print(f"      {Colors.FAIL}✗{Colors.ENDC} {short_node}: {Colors.FAIL}{ip}{Colors.ENDC}")
+
+                self._print("\n    Nodes with CORRECT routes (host IP):")
+                for node, ip in list(valid_nodes.items())[:3]:  # Show first 3
+                    short_node = node[-12:] if len(node) > 12 else node
+                    self._print(f"      {Colors.OKGREEN}✓{Colors.ENDC} {short_node}: {Colors.OKGREEN}{ip}{Colors.ENDC}")
+
+                self._print(f"\n    {Colors.BOLD}Analysis:{Colors.ENDC}")
+                self._print("      → Same cluster, different gateway IPs in table 150")
+                self._print("      → Nodes with .0 address: egress health checks WILL FAIL")
+                self._print("      → Nodes with valid IP: egress health checks work correctly")
+                self._print("      → This confirms misconfiguration (not infrastructure issue)")
+
+                # Upgrade confidence if we haven't already
+                self.findings.append(
+                    f"{cluster}: Cross-node comparison confirms table 150 "
+                    f"misconfiguration on {len(network_addr_nodes)} node(s)"
+                )
+
     def get_cluster_subdirs(self):
         """Get sorted list of cluster subdirectories from gather/
 
@@ -3469,6 +3906,28 @@ class SubmarinerAnalyzer:
 
         return list(remote_cidrs)
 
+    def detect_ovn_gateway_mode(self, cluster):
+        """
+        Detect OVN-Kubernetes gateway mode from collected configuration.
+
+        Returns: 'LOCAL', 'SHARED', or None (unknown/not collected)
+        """
+        ovn_config = self.read_yaml(f"{cluster}/ovn-operator-config.yaml")
+        if ovn_config:
+            routing_via_host = ovn_config.get('spec', {}) \
+                .get('defaultNetwork', {}) \
+                .get('ovnKubernetesConfig', {}) \
+                .get('gatewayConfig', {}) \
+                .get('routingViaHost')
+
+            if routing_via_host is True:
+                return "LOCAL"
+            elif routing_via_host is False:
+                return "SHARED"
+
+        # Config not collected or not OpenShift
+        return None
+
     def check_ovn_local_gateway_mode_issue(self):
         """
         Check for known OVN-Kubernetes local gateway mode health check issue.
@@ -3490,49 +3949,35 @@ class SubmarinerAnalyzer:
             self._print(f"  {Colors.OKBLUE}ℹ{Colors.ENDC} CNI is not OVN-Kubernetes - skipping OVN local gateway mode check")
             return
 
-        # Method 1: Check for breth0 interface on ALL nodes
-        cluster_subdirs = self.get_cluster_subdirs()
-        if not cluster_subdirs:
-            return
-
+        # Detect gateway mode from OVN operator config (authoritative source)
         for cluster in ['cluster1', 'cluster2']:
-            actual_cluster_name = cluster_subdirs.get(cluster)
-            if not actual_cluster_name:
-                continue
-
-            gather_base_dir = os.path.join(self.diagnostics_dir, cluster, "gather")
-            if not os.path.exists(gather_base_dir):
+            cni = self.detect_cni(cluster)
+            if "OVN" not in cni:
                 continue
 
             self._print(f"\n  Checking {cluster}...")
 
-            # Count nodes with breth0 - find ip-a.log files recursively
-            ip_a_files = self.find_files_recursive(gather_base_dir, "*_ip-a.log")
-            breth0_count = 0
-            total_nodes = len(ip_a_files)
+            # Detect gateway mode from OVN operator config
+            gateway_mode = self.detect_ovn_gateway_mode(cluster)
 
-            for ip_a_file in ip_a_files:
-                try:
-                    with open(ip_a_file) as f:
-                        content = f.read()
-                    if re.search(r'^\d+: breth0:', content, re.MULTILINE):
-                        breth0_count += 1
-                except OSError:
-                    continue
-
-            # Determine gateway mode (local mode = all nodes have breth0)
-            if total_nodes == 0:
-                self._print(f"    {Colors.WARNING}⚠{Colors.ENDC} Could not determine node count from gather data")
-                self._print("             (OVN-K local gateway mode detection requires ip-a.log files for each node)")
+            if gateway_mode is None:
+                self._print(f"    {Colors.OKBLUE}ℹ{Colors.ENDC} OVN operator config not available (not OpenShift or old diagnostic)")
                 continue
 
-            is_local_mode = (breth0_count == total_nodes)
-
-            if is_local_mode:
+            if gateway_mode == "LOCAL":
                 self._print(f"    {Colors.WARNING}⚠{Colors.ENDC} OVN-K gateway mode: LOCAL")
-                self._print(f"      - All {total_nodes} nodes have breth0 interface")
+                self._print("      - Detected from OVN operator config (routingViaHost: true)")
 
                 # Check Gateway CR status directly - find gateway files recursively
+                cluster_subdirs = self.get_cluster_subdirs()
+                actual_cluster_name = cluster_subdirs.get(cluster) if cluster_subdirs else None
+                if not actual_cluster_name:
+                    continue
+
+                gather_base_dir = os.path.join(self.diagnostics_dir, cluster, "gather")
+                if not os.path.exists(gather_base_dir):
+                    continue
+
                 gateway_status = 'unknown'
                 gateway_message = ''
                 gateway_files = self.find_files_recursive(gather_base_dir, "gateways_*.yaml")
@@ -3609,9 +4054,9 @@ class SubmarinerAnalyzer:
                     self._print(f"    {Colors.OKGREEN}✓{Colors.ENDC} Gateway status: {gateway_status}")
                 else:
                     self._print(f"    {Colors.WARNING}⚠{Colors.ENDC} Gateway status: {gateway_status} (but not 'ping' failure pattern)")
-            else:
-                self._print(f"    {Colors.OKBLUE}ℹ{Colors.ENDC} OVN-K gateway mode: SHARED (or not detected)")
-                self._print(f"      - {breth0_count}/{total_nodes} nodes have breth0 interface")
+            elif gateway_mode == "SHARED":
+                self._print(f"    {Colors.OKBLUE}ℹ{Colors.ENDC} OVN-K gateway mode: SHARED")
+                self._print("      - Detected from OVN operator config (routingViaHost: false)")
 
     def verify_ovnk_host_networking(self):
         """
@@ -4995,6 +5440,10 @@ class SubmarinerAnalyzer:
             self._print(f"  Timestamp: {manifest.get('Timestamp', 'unknown')}")
             self._print(f"  Issue: {manifest.get('Complaint', 'unknown')}")
 
+        # Detect deployment type
+        deployment_type = self.detect_deployment_type()
+        self._print(f"  Deployment: {deployment_type}")
+
         # Check for collection errors
         self.check_collection_errors()
 
@@ -5007,6 +5456,9 @@ class SubmarinerAnalyzer:
 
             # Analyze RouteAgent resources first (key diagnostic info)
             self.analyze_routeagents()
+
+            # NEW: Analyze VXLAN ICMP correlation for table 150 routing issues
+            self.analyze_vxlan_icmp_correlation()
 
             # Analyze network topology
             self.analyze_network_topology()
@@ -5035,6 +5487,8 @@ class SubmarinerAnalyzer:
                 self.check_ovn_local_gateway_mode_issue()
                 self.verify_ovnk_host_networking()
                 self.check_main_table_routes()
+                # NEW: Check table 150 routes for gateway address issues
+                self.check_ovn_table150_routes()
 
             # NEW: Analyze nftables rules (only when datapath broken)
             self.analyze_nftables()
@@ -5066,6 +5520,7 @@ class SubmarinerAnalyzer:
 
         return True
 
+
 def main():
     parser = argparse.ArgumentParser(
         description='Analyze Submariner diagnostics for common issues',
@@ -5095,6 +5550,7 @@ For more information:
 
     success = analyzer.run()
     sys.exit(0 if success else 1)
+
 
 if __name__ == "__main__":
     main()

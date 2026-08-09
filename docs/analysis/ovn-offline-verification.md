@@ -44,7 +44,7 @@ Submariner configures different components based on node role and OVN topology.
    150: from all to 10.130.0.0/16 lookup 150
    150: from all to 172.31.0.0/16 lookup 150
    150: from all to 242.254.0.0/16 lookup 150  # If globalnet enabled
-   
+
    # Ingress: Local cluster CIDRs → table 149
    149: from all to 10.131.0.0/16 lookup 149
    149: from all to 172.31.0.0/16 lookup 149
@@ -56,6 +56,76 @@ Submariner configures different components based on node role and OVN topology.
    default via <nexthop> dev ovn-k8s-mp0 table 150
    # Nexthop discovered from ovn-k8s-mp0's default route
    ```
+
+   **CRITICAL VALIDATION:** Gateway IP should be a valid host address, NOT a network address!
+
+   ```bash
+   # EXPECTED (host address):
+   default via 172.17.0.1 dev ovn-k8s-mp0 table 150
+
+   # SUSPICIOUS (network address - ends in .0):
+   default via 172.17.0.0 dev ovn-k8s-mp0 table 150  ✗ NEEDS VERIFICATION!
+   ```
+
+   **Observed Pattern:** In some cases, table 150 appears to use network address (e.g., 172.17.0.0)
+   instead of gateway IP (e.g., 172.17.0.1). This pattern has been observed after node reboot
+   in OVN-K Interconnect mode.
+
+   **Associated Symptoms:** Gateway health checks fail (status=error) while RouteAgent health
+   checks work (status=connected).
+
+   **Detection:** Check `*_ip-routes-table150.log` files for pattern "default via X.X.X.0"
+
+   **Verification Steps:**
+   1. Check if pattern correlates with Gateway error + RouteAgent connected
+   2. Verify main routing table shows correct gateway IP
+   3. Check if issue appeared after node reboot
+
+   **Workaround:** If verified as misconfiguration, fix via RouteAgent restart.
+
+   ⚠️ **IMPORTANT:** This workaround does NOT fix the root cause. Manual route edits may be
+   overwritten by RouteAgent and do not persist across reboot. The proper fix requires
+   addressing the timing issue in RouteAgent's route selection logic.
+
+   **Step 1: Detect deployment type**
+   ```bash
+   # Check if ACM-Managed or Standalone
+   kubectl get submarinerconfig -A  # If resources found → ACM-Managed
+   kubectl get submariner -n submariner-operator  # If found → Standalone
+   ```
+
+   **Step 2: Restart RouteAgent (deployment-specific)**
+
+   **For ACM-Managed deployments:**
+   ```bash
+   # On ACM hub cluster, trigger RouteAgent restart via ManagedClusterAddOn
+   kubectl delete pod -n <managed-cluster-namespace> \
+     -l component=submariner-route-agent
+   
+   # DO NOT edit SubmarinerConfig - RouteAgent will regenerate table 150
+   ```
+
+   **For Standalone Submariner:**
+   ```bash
+   # On the managed cluster
+   kubectl delete pod -n submariner-operator \
+     -l app=submariner-route-agent
+
+   # RouteAgent will recreate table 150 on restart
+   ```
+
+   **Verification after restart:**
+   ```bash
+   # Verify correct gateway in table 150
+   ip route show table 150
+   # Should show: default via <valid-host-ip> dev ovn-k8s-mp0
+   # NOT: default via <network-address-ending-in-.0>
+   ```
+
+   **Possible Root Cause:** Race condition during node initialization where RouteAgent queries
+   routes before OVN-K adds the cluster route with gateway, causing it to select the local
+   subnet route (network address) instead of the cluster route (gateway IP). Further
+   investigation: <https://github.com/submariner-io/submariner/issues/4121>
 
 3. **Table 149 Route** - Receive from tunnel
    ```bash
