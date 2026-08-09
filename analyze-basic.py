@@ -201,6 +201,7 @@ class SubmarinerAnalyzer:
                 if os.path.exists(gather_dir):
                     # Look for submariner-addon pod files (logs, yaml)
                     addon_files = self.find_files_recursive(gather_dir, '*submariner-addon*.log', max_depth=2)
+                    addon_files += self.find_files_recursive(gather_dir, '*submariner-addon*.yaml', max_depth=2)
                     if addon_files:
                         return "ACM-Managed"
 
@@ -2297,25 +2298,33 @@ class SubmarinerAnalyzer:
         if cluster1_icmp or cluster2_icmp:
             self._print(f"\n  {Colors.BOLD}ICMP Health Check Analysis:{Colors.ENDC}")
 
-            # Categorize ICMP IDs by success rate (process clusters separately to handle overlapping IDs)
+            # Categorize ICMP IDs by success rate with cluster labels
             failed_ids = []
             success_ids = []
+            cluster_patterns = {}  # Track which clusters have both patterns
 
             for icmp_id, stats in cluster1_icmp.items():
                 if stats['success'] < 50:
-                    failed_ids.append((icmp_id, stats))
+                    failed_ids.append(('cluster1', icmp_id, stats))
                 elif stats['success'] >= 90:
-                    success_ids.append((icmp_id, stats))
+                    success_ids.append(('cluster1', icmp_id, stats))
 
             for icmp_id, stats in cluster2_icmp.items():
                 if stats['success'] < 50:
-                    failed_ids.append((icmp_id, stats))
+                    failed_ids.append(('cluster2', icmp_id, stats))
                 elif stats['success'] >= 90:
-                    success_ids.append((icmp_id, stats))
+                    success_ids.append(('cluster2', icmp_id, stats))
 
-            if failed_ids and success_ids and pattern_clusters:
+            # Identify clusters with both failing and successful streams
+            for cluster in ['cluster1', 'cluster2']:
+                has_failed = any(c == cluster for c, _, _ in failed_ids)
+                has_success = any(c == cluster for c, _, _ in success_ids)
+                if has_failed and has_success and cluster in pattern_clusters:
+                    cluster_patterns[cluster] = True
+
+            if failed_ids and success_ids and cluster_patterns:
                 self._print(f"\n  {Colors.BOLD}🔍 TABLE 150 ROUTING ISSUE PATTERN DETECTED:{Colors.ENDC}")
-                self._print(f"    Affected clusters: {', '.join(pattern_clusters)}")
+                self._print(f"    Affected clusters: {', '.join(cluster_patterns.keys())}")
                 self._print(f"    {Colors.FAIL}✗{Colors.ENDC} Gateway health checks: {Colors.FAIL}FAILING{Colors.ENDC}")
                 self._print(
                     f"    {Colors.OKGREEN}✓{Colors.ENDC} RouteAgent health checks: "
